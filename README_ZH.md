@@ -4,171 +4,255 @@
 
 [English](README.md) | **中文**
 
-面向 Agent 技能库的版本管理与退化检测工具。
+面向 Agent Skill 的版本管理、运行监测与退化诊断工具。
 
-Agent 的技能库会**腐烂**。今天还能用的 skill，会在 API 改版、网页重构或底层模型
-更换后悄悄失效。大多数工具靠**代理信号**判断陈旧——上游版本号、git 提交、文件哈希
-——却从不关心这个 skill 是否**还能跑通**。
+Skill 在发布时能够正常运行，并不意味着它会一直可靠。API 升级、网页结构调整、底层模型切换或任务分布变化，都可能导致原本有效的 Skill 成功率下降。此类问题通常不会体现为明确的版本冲突，而是以偶发失败、调用结果异常或整体成功率持续降低的形式出现。
 
-SkillGuard 换个思路，盯住**执行流**：持续统计每个 skill 版本的真实成功率，用统计
-检验标记显著退化，并管理一套安全的**修复 → 灰度 → 晋升/回滚**闭环——让坏掉的 skill
-不会被静默覆盖，坏的修复也不会一次性放量到全部流量。
+SkillGuard 根据真实执行记录持续评估每个 Skill 版本的运行表现，通过统计方法识别显著退化，并提供一套完整的 **检测、归因、修复、灰度验证、晋升或回滚** 流程。修复版本在验证通过前不会直接替换现役版本，从而降低错误修复带来的影响。
 
-## 有何不同
+## 核心能力
 
-- **基于结果判定退化，而非元数据。** 用双比例 z 检验，把 skill 近期成功率和它自己的
-  长期基线对比，抓住 version-diff 类工具漏掉的静默失效。
-- **根因归因。** 只知道 skill 坏了还不够，得知道**该怎么办**。SkillGuard 把每次退化
-  归因到四类原因之一——环境漂移、模型更换、任务漂移、技能内在缺陷——并各自映射到
-  不同的推荐动作。
-- **修复走灰度门，不盲改。** 修复后的版本先进入 canary 灰度试用（流量占比可配），
-  只有在最小试验数内成功率达标才晋升；否则回滚，旧版本继续服务。
-- **完整审计轨迹。** 每一次状态变更都记录在案，任何版本为何被标记、修复、晋升或退役
-  都可追溯。
-- **零依赖。** 纯标准库 + SQLite，既可当库用，也可当 CLI 用。
+- **基于真实执行结果检测退化**：使用双样本比例 z 检验，对比 Skill 的近期成功率与历史基线，识别仅靠版本号、Git 提交或文件哈希无法发现的运行质量下降。
+- **分析退化原因**：根据成功率变化、错误类型、模型信息和任务标签，将问题归因于环境变化、模型切换、任务分布变化或 Skill 自身缺陷，并给出相应的处理建议。
+- **灰度验证修复版本**：修复后的版本先进入 probation 状态，只承接一定比例的调用；达到最小试验次数和成功率要求后才会晋升，否则自动拒绝该版本。
+- **支持安全回滚**：新版本验证失败时保留原有现役版本，避免未经验证的修改影响全部调用。
+- **完整记录生命周期**：Skill 的创建、退化标记、修复、晋升、拒绝和退役等操作都会写入审计日志。
+- **轻量且无运行时依赖**：基于 Python 标准库和 SQLite 实现，可作为 Python 库使用，也可通过命令行操作。
 
 ## 安装
 
+在仓库根目录执行：
+
 ```bash
-pip install -e .          # 在仓库根目录执行
+pip install -e .
 ```
 
-## 快速上手（CLI）
+如需运行测试：
 
 ```bash
-# 注册一个 skill（首个版本自动激活）
-skillguard add scraper --name "抓取页面标题" --content-file skill.txt
+pip install -e ".[dev]"
+```
 
-# agent 每次运行 skill 后，把执行结果记进来
+## CLI 快速开始
+
+```bash
+# 注册 Skill，首个版本会自动激活
+skillguard add scraper \
+  --name "抓取页面标题" \
+  --content-file skill.txt
+
+# 记录执行结果
 skillguard record scraper --ok
 skillguard record scraper --fail --error "SelectorNotFound"
 
-# 一眼看整个技能库的健康度
+# 查看技能库整体运行状态
 skillguard status
 
-# 运行退化检测，退化的 skill 会被标记
+# 检测退化并标记异常版本
 skillguard doctor
 
-# 对退化做根因归因，给出推荐动作
+# 分析退化原因并获取处理建议
 skillguard attribute scraper
 
-# 创建修复版本 -> 进入 canary 灰度试用
+# 创建修复版本，并进入灰度验证阶段
 skillguard repair scraper --content-file fixed_skill.txt
 
-# canary 承接足够流量后，决定它的命运
-skillguard evaluate scraper      # -> promoted | rejected | pending
+# 根据灰度执行结果决定晋升、拒绝或继续观察
+skillguard evaluate scraper
 
-# 查看版本树与审计事件
+# 查看版本关系和审计记录
 skillguard history scraper
 ```
 
-## 快速上手（作为库）
+`evaluate` 可能返回：
+
+- `promoted`：修复版本通过验证并晋升为现役版本。
+- `rejected`：修复版本未达到要求，已被拒绝。
+- `pending`：有效试验次数不足，暂不作出决定。
+
+## 作为 Python 库使用
 
 ```python
-from skillguard import SkillStore, LifecycleManager, ExecutionRecord
+from skillguard import ExecutionRecord, LifecycleManager, SkillStore
 
 store = SkillStore("skills.db")
-mgr = LifecycleManager(store)
+manager = LifecycleManager(store)
 
-store.add_skill("scraper", "抓取页面标题", content="selector = 'head > title'")
-mgr.activate_initial("scraper")
+store.add_skill(
+    "scraper",
+    "抓取页面标题",
+    content="selector = 'head > title'",
+)
+manager.activate_initial("scraper")
 
-# agent 运行时记录结果
-store.record_execution(ExecutionRecord("scraper", 1, success=True))
+# Agent 调用 Skill 后记录执行结果
+store.record_execution(
+    ExecutionRecord("scraper", version=1, success=True)
+)
 
-# 定期扫描退化
-flagged = mgr.scan()
+# 定期检查现役版本是否出现退化
+flagged = manager.scan()
 
-# 修复退化的 skill（把你自己的 LLM / 人工修复接进 repair_fn）
+# 接入人工修复或 LLM 修复逻辑
 if flagged:
-    mgr.repair("scraper", repair_fn=lambda old, reasons: fix(old, reasons))
+    manager.repair(
+        "scraper",
+        repair_fn=lambda old_content, reasons: fix(old_content, reasons),
+    )
 
-# 路由调用：canary 分到一部分流量，其余走现役版本
-version = mgr.route("scraper")
+# 根据配置将少量调用路由到灰度版本
+version = manager.route("scraper")
 
-# canary 试验数够了以后，决定晋升/回滚
-mgr.evaluate_probation("scraper")
+# 试验次数达到要求后评估灰度版本
+manager.evaluate_probation("scraper")
 ```
 
-## 退化是怎么检测的
+## 退化检测机制
 
-一个 skill 版本在以下任一条件成立时被标记为 **DEGRADED**：
+SkillGuard 综合使用以下三类信号评估 Skill 版本的运行状态。
 
-1. **近期 vs 基线下跌** —— 对近期窗口成功率与长期基线做单侧双比例 z 检验，超过
-   `z_threshold`（默认 1.645 ≈ 95% 置信）。抓突发的环境失效。
-2. **EWMA 跌破下限** —— 指数加权成功率低于 `ewma_floor`。抓缓慢退化。
-3. **陈旧** —— 超过 `stale_after_days` 没有执行。默认只告警；`stale_is_degraded`
-   打开时才判为退化。
+### 1. 近期成功率显著下降
 
-所有阈值在 `HealthConfig` 里；灰度行为在 `ProbationConfig` 里。
+将近期窗口的成功率与长期历史基线进行单侧双样本比例 z 检验。当统计量超过 `z_threshold` 时，判定近期表现出现显著下降。
 
-## 根因归因
+默认阈值为 `1.645`，对应约 95% 的单侧置信水平。这类信号适合识别 API、页面结构或外部服务突然变化造成的集中失败。
 
-skill 被标记后，`Attributor` 从执行流的可解释信号（变点陡峭度、主导错误签名、
-模型迁移、任务分布外）判断它**为什么**退化，并推荐动作：
+### 2. EWMA 成功率低于下限
 
-- **环境漂移** —— 突变式失效、单一主导错误、模型与任务不变
-  → **修复** skill 以适配新环境。
-- **模型更换** —— 失败集中在健康期从未见过的模型上
-  → **重新验证**；修复更可能是 prompt/模型适配，而非改 skill 逻辑。
-- **任务漂移** —— 失败集中在健康期从未见过的任务类型上
-  → **收窄触发范围**；skill 是被用在分布外场景，而非坏了。
-- **技能缺陷** —— 全程 flaky 且无外部解释
-  → **重写** 而非打补丁。
+使用指数加权移动平均（EWMA）提高近期执行结果的权重。当 EWMA 低于 `ewma_floor` 时，将 Skill 标记为退化。
 
-归因需要执行记录上的可选字段 `model` 和 `task_tag`
-（`skillguard record ... --model <m> --tag <t>`）。阈值在 `AttributionConfig` 里。
+该指标用于识别缓慢发生的质量下降，也能发现长期表现不稳定的 Skill。
 
-## 生命周期状态机
+### 3. 长期未验证
 
+如果某个版本超过 `stale_after_days` 没有执行，SkillGuard 会将其报告为长期未验证。默认情况下，该信号只产生提示；将 `stale_is_degraded` 设为 `True` 后，也可直接将其视为退化。
+
+检测参数通过 `HealthConfig` 配置，灰度验证参数通过 `ProbationConfig` 配置。
+
+## 退化原因分析
+
+检测到退化后，`Attributor` 会结合执行记录中的可解释信号判断原因，包括成功率变化幅度、主要错误类型、模型变化和任务分布变化。
+
+### 环境变化（`environment_drift`）
+
+典型特征：成功率突然下降、失败集中于同一种错误，同时模型与任务类型保持不变。
+
+建议：检查 API、网页结构、数据格式或外部依赖是否发生变化，并据此修复 Skill。
+
+### 模型切换（`model_change`）
+
+典型特征：失败主要发生在历史健康阶段未使用过的新模型上。
+
+建议：优先重新验证提示词、工具调用格式和模型兼容性，而不是直接修改 Skill 的业务逻辑。
+
+### 任务分布变化（`task_drift`）
+
+典型特征：失败主要来自历史健康阶段没有覆盖过的新任务类型。
+
+建议：调整 Skill 的描述或触发条件，限制适用范围；必要时为新任务创建独立 Skill。
+
+### Skill 自身缺陷（`skill_defect`）
+
+典型特征：不存在清晰的突发变化，Skill 在较长时间内持续出现不同类型的失败，也无法由模型或任务变化解释。
+
+建议：重新设计或重写 Skill，而不是继续叠加局部补丁。
+
+为了提高归因质量，建议在记录执行结果时提供 `model` 和 `task_tag`：
+
+```bash
+skillguard record scraper \
+  --fail \
+  --error "SelectorNotFound" \
+  --model claude-sonnet \
+  --tag web-scraping
 ```
-candidate ──activate/promote──► active ──检测到退化──► degraded
-    ▲                             │                        │
-    │                             │ repair()               │ repair()
-    └─────────── probation ◄──────┴────────────────────────┘
-                    │
-        晋升（达标）──► active   （旧版本 ──► retired）
-        回滚（不达标）──► rejected（现役版本继续服务）
+
+归因阈值通过 `AttributionConfig` 配置。
+
+## 生命周期
+
+```text
+candidate ──激活/晋升──► active ──检测到退化──► degraded
+    ▲                       │                         │
+    │                       │ repair()                │ repair()
+    └────── probation ◄─────┴─────────────────────────┘
+               │
+               ├── 验证通过 ──► active（原版本转为 retired）
+               └── 验证失败 ──► rejected（现役版本保持不变）
 ```
 
-## 跑一下 demo
+各状态含义：
+
+- `candidate`：新建但尚未验证的版本。
+- `probation`：正在接受灰度验证的版本。
+- `active`：当前现役版本。
+- `degraded`：已检测到运行质量下降的版本。
+- `retired`：已被新版本替换的历史版本。
+- `rejected`：未通过灰度验证的版本。
+
+## 运行演示
 
 ```bash
 python -m demo.simulate
 ```
 
-模拟一个 scraper skill 在目标站点改版后失效的全过程：SkillGuard 检测到下跌、
-标记、把修复版本纳入 canary 试用、验证通过后晋升——并打印完整审计轨迹。
+演示脚本模拟如下流程：
 
-## 导入你的真实使用数据
+1. 页面标题抓取 Skill 在初始阶段保持正常。
+2. 目标网站调整 HTML 结构，旧选择器开始持续失败。
+3. SkillGuard 检测到成功率显著下降。
+4. 归因模块将问题识别为环境变化。
+5. 修复版本进入灰度验证阶段。
+6. 修复版本达到成功率要求后晋升，旧版本转为退役状态。
+7. 输出完整的生命周期审计记录。
 
-不用合成数据，直接把 SkillGuard 指向 agent 的本地会话日志。它会把每个工具/skill
-调用与其结果配对记录，没见过的 skill 自动注册。
+## 导入真实会话记录
+
+SkillGuard 可以从本地 Agent 会话日志中提取工具调用及其执行结果，无需手工逐条录入。
 
 ```bash
-# Claude Code 会话记录
+# 导入 Claude Code 会话记录
 skillguard ingest ~/.claude/projects --format claude
 
-# Codex rollout
+# 导入 Codex rollout 记录
 skillguard ingest ~/.codex/sessions --format codex
 
-# 然后分析你自己的历史
+# 分析导入后的真实执行数据
 skillguard status
 skillguard doctor
 skillguard attribute <skill_id>
 ```
 
-成败判定启发式：Claude Code 中 `tool_result` 带 `is_error: true` 记为失败；
-Codex 中工具输出的 `exit_code` 非零或带 `error` 字段记为失败。会捕获 `model` 和
-`task_tag`（来自会话的 cwd）以支撑归因。没有对应结果的调用视为不完整而跳过。
+### 结果判定规则
+
+- Claude Code：`tool_result` 中 `is_error: true` 的调用记为失败。
+- Codex：工具输出中的 `exit_code` 非零或包含 `error` 字段时记为失败。
+- 没有对应结果的调用视为不完整记录，不会写入数据库。
+- 会话中的模型信息和工作目录会分别写入 `model` 与 `task_tag`，供归因模块使用。
+
+默认情况下，导入器会自动注册未出现过的工具名称。使用 `--no-register` 可以跳过尚未注册的工具：
+
+```bash
+skillguard ingest ~/.claude/projects \
+  --format claude \
+  --no-register
+```
 
 ## 运行测试
 
 ```bash
-pip install -e ".[dev]"
 pytest
 ```
 
+当前测试覆盖：
+
+- Skill 和版本的创建、激活与存储。
+- z 检验、EWMA 与长期未验证检测。
+- 退化标记与审计记录。
+- 修复版本的灰度路由、晋升和拒绝。
+- 环境变化、模型切换、任务分布变化和 Skill 缺陷归因。
+- Claude Code 与 Codex 会话日志解析和导入。
+
 ## 许可证
 
-MIT
+本项目采用 [MIT License](LICENSE)。
