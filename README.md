@@ -1,5 +1,7 @@
 # SkillGuard
 
+[![CI](https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml/badge.svg)](https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml)
+
 Version management and degradation detection for agent skill libraries.
 
 Agent skill libraries **rot**. A skill that works today silently breaks when an
