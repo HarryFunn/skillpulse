@@ -7,14 +7,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from skillguard import (
+from skillpulse import (
     Attributor,
     LifecycleManager,
     ReplayConfig,
     SkillRun,
     SkillStore,
 )
-from skillguard.lifecycle import ProbationConfig
+from skillpulse.lifecycle import ProbationConfig
 
 SKILL = "web-scrape-title"
 

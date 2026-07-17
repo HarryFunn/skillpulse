@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- Rename the project from SkillGuard to SkillPulse to avoid conflicts with an
+  existing Agent Skills permission framework and unrelated commercial products.
 - Make Claude Code and Codex session ingestion idempotent with stable ToolCall IDs.
 - Report added, duplicate, skipped, and processed-file counts during ingestion.
 - Separate ToolCall observations from final SkillRun outcomes.

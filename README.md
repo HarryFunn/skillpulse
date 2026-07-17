@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/skillguard-banner.png" alt="SkillGuard" width="760" />
+  <img src="images/skillpulse-banner.png" alt="SkillPulse" width="760" />
 </p>
 
 <h3 align="center">Runtime health monitoring and safe lifecycle management for Agent Skills</h3>
@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml"><img src="https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/HarryFunn/skillpulse/actions/workflows/ci.yml"><img src="https://github.com/HarryFunn/skillpulse/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-059669.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/runtime_dependencies-0-2F3337.svg" alt="Zero runtime dependencies" />
@@ -21,9 +21,9 @@
 
 ---
 
-SkillGuard evaluates each Agent Skill version from its real execution history. It detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → repair → canary → promote/rollback** workflow.
+SkillPulse evaluates each Agent Skill version from its real execution history. It detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → repair → canary → promote/rollback** workflow.
 
-Unlike tools that rely only on upstream versions, Git commits, or file hashes, SkillGuard measures whether a Skill still works in practice.
+Unlike tools that rely only on upstream versions, Git commits, or file hashes, SkillPulse measures whether a Skill still works in practice.
 
 ## Why it's different
 
@@ -31,7 +31,7 @@ Unlike tools that rely only on upstream versions, Git commits, or file hashes, S
   a skill's recent success rate against its own long-run baseline, catching
   silent breakage that version-diff tools miss.
 - **Root-cause attribution.** Detecting *that* a skill broke isn't enough to
-  know *what to do*. SkillGuard attributes each degradation to one of four
+  know *what to do*. SkillPulse attributes each degradation to one of four
   causes — environment drift, model change, task drift, or an intrinsic skill
   defect — and maps each to a different recommended action.
 - **Repair is gated, not blind.** A repaired version enters a canary probation
@@ -53,34 +53,34 @@ pip install -e .          # from the repo root
 
 ```bash
 # register a Skill; v1 becomes active
-skillguard add scraper --name "Scrape page title" --content-file skill.txt
+skillpulse add scraper --name "Scrape page title" --content-file skill.txt
 
 # record the final outcome of complete Skill executions
-skillguard run-record scraper --ok --run-id run-001
-skillguard run-record scraper --fail --run-id run-002 \
+skillpulse run-record scraper --ok --run-id run-001
+skillpulse run-record scraper --fail --run-id run-002 \
   --error "SelectorNotFound" --model claude-sonnet --tag web-scraping
 
-skillguard status
-skillguard doctor
-skillguard attribute scraper
+skillpulse status
+skillpulse doctor
+skillpulse attribute scraper
 
 # repair creates a CANDIDATE; it cannot receive traffic yet
-skillguard repair scraper --content-file fixed_skill.txt
+skillpulse repair scraper --content-file fixed_skill.txt
 
 # replay-results.json maps historical run_id -> candidate outcome
-skillguard replay scraper 2 --results replay-results.json
+skillpulse replay scraper 2 --results replay-results.json
 
 # only a replay-approved candidate enters probation
-skillguard evaluate scraper      # -> promoted | rejected | pending
+skillpulse evaluate scraper      # -> promoted | rejected | pending
 
 # export a machine-readable report
-skillguard report --output report.json
+skillpulse report --output report.json
 ```
 
 ## Quick start (library)
 
 ```python
-from skillguard import LifecycleManager, SkillRun, SkillStore
+from skillpulse import LifecycleManager, SkillRun, SkillStore
 
 store = SkillStore("skills.db")
 manager = LifecycleManager(store)
@@ -138,7 +138,7 @@ action:
   → **rewrite** rather than patch.
 
 Attribution needs the optional `model` and `task_tag` fields on execution
-records (`skillguard record ... --model <m> --tag <t>`). Thresholds live in
+records (`skillpulse record ... --model <m> --tag <t>`). Thresholds live in
 `AttributionConfig`.
 
 ## Two-level repair gate
@@ -166,12 +166,12 @@ python -m demo.simulate
 ```
 
 Simulates a scraper skill that breaks when the target site changes its HTML:
-SkillGuard detects the drop, flags it, accepts a repaired version into a canary
+SkillPulse detects the drop, flags it, accepts a repaired version into a canary
 trial, and promotes it once proven — printing the full audit trail.
 
 ## ToolCall vs SkillRun
 
-SkillGuard deliberately separates two levels of evidence:
+SkillPulse deliberately separates two levels of evidence:
 
 - `ToolCall`: one tool invocation inside an agent session.
 - `SkillRun`: the final outcome of a complete Skill execution, which may contain
@@ -182,8 +182,8 @@ Claude Code and Codex transcripts expose tool calls, so `ingest` stores
 successful Skill and does not auto-register tool names as Skills.
 
 ```bash
-skillguard ingest ~/.claude/projects --format claude
-skillguard ingest ~/.codex/sessions --format codex
+skillpulse ingest ~/.claude/projects --format claude
+skillpulse ingest ~/.codex/sessions --format codex
 ```
 
 Import is idempotent. Stable IDs derived from the transcript path and original

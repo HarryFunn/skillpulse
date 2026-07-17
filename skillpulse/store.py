@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS events (
 class SkillStore:
     """Persistence layer. All lifecycle/health logic lives elsewhere."""
 
-    def __init__(self, db_path: str | Path = "skillguard.db") -> None:
+    def __init__(self, db_path: str | Path = "skillpulse.db") -> None:
         self.db_path = str(db_path)
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row

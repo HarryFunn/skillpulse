@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from skillguard import SessionIngestor, SkillStore
-from skillguard.ingest import parse_claude_session, parse_codex_session
+from skillpulse import SessionIngestor, SkillStore
+from skillpulse.ingest import parse_claude_session, parse_codex_session
 
 
 @pytest.fixture

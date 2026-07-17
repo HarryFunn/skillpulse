@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/skillguard-banner.png" alt="SkillGuard" width="760" />
+  <img src="images/skillpulse-banner.png" alt="SkillPulse" width="760" />
 </p>
 
 <h3 align="center">面向 Agent Skill 的运行监测与安全生命周期管理</h3>
@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml"><img src="https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/HarryFunn/skillpulse/actions/workflows/ci.yml"><img src="https://github.com/HarryFunn/skillpulse/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-059669.svg" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10+" />
   <img src="https://img.shields.io/badge/runtime_dependencies-0-2F3337.svg" alt="零运行时依赖" />
@@ -21,9 +21,9 @@
 
 ---
 
-SkillGuard 根据真实执行记录持续评估每个 Agent Skill 版本的运行表现，通过统计方法识别显著退化，区分环境变化、模型切换、任务分布变化和 Skill 自身缺陷，并管理一套完整的 **检测 → 归因 → 修复 → 灰度验证 → 晋升/回滚** 流程。
+SkillPulse 根据真实执行记录持续评估每个 Agent Skill 版本的运行表现，通过统计方法识别显著退化，区分环境变化、模型切换、任务分布变化和 Skill 自身缺陷，并管理一套完整的 **检测 → 归因 → 修复 → 灰度验证 → 晋升/回滚** 流程。
 
-与仅依赖上游版本、Git 提交或文件哈希的工具不同，SkillGuard 关注的是 Skill 在实际运行中是否仍然有效。
+与仅依赖上游版本、Git 提交或文件哈希的工具不同，SkillPulse 关注的是 Skill 在实际运行中是否仍然有效。
 
 ## 核心能力
 
@@ -52,34 +52,34 @@ pip install -e ".[dev]"
 
 ```bash
 # 注册 Skill，v1 自动成为现役版本
-skillguard add scraper --name "抓取页面标题" --content-file skill.txt
+skillpulse add scraper --name "抓取页面标题" --content-file skill.txt
 
 # 记录完整 Skill 执行的最终结果
-skillguard run-record scraper --ok --run-id run-001
-skillguard run-record scraper --fail --run-id run-002 \
+skillpulse run-record scraper --ok --run-id run-001
+skillpulse run-record scraper --fail --run-id run-002 \
   --error "SelectorNotFound" --model claude-sonnet --tag web-scraping
 
-skillguard status
-skillguard doctor
-skillguard attribute scraper
+skillpulse status
+skillpulse doctor
+skillpulse attribute scraper
 
 # repair 只创建 candidate，此时不能承接线上流量
-skillguard repair scraper --content-file fixed_skill.txt
+skillpulse repair scraper --content-file fixed_skill.txt
 
 # replay-results.json 的格式为 {"历史 run_id": true/false}
-skillguard replay scraper 2 --results replay-results.json
+skillpulse replay scraper 2 --results replay-results.json
 
 # 离线回放通过后，candidate 才会进入 probation
-skillguard evaluate scraper      # promoted | rejected | pending
+skillpulse evaluate scraper      # promoted | rejected | pending
 
 # 输出机器可读的完整报告
-skillguard report --output report.json
+skillpulse report --output report.json
 ```
 
 ## 作为 Python 库使用
 
 ```python
-from skillguard import LifecycleManager, SkillRun, SkillStore
+from skillpulse import LifecycleManager, SkillRun, SkillStore
 
 store = SkillStore("skills.db")
 manager = LifecycleManager(store)
@@ -108,7 +108,7 @@ if manager.scan():
 
 ## 退化检测机制
 
-SkillGuard 综合使用以下三类信号评估 Skill 版本的运行状态。
+SkillPulse 综合使用以下三类信号评估 Skill 版本的运行状态。
 
 ### 1. 近期成功率显著下降
 
@@ -124,7 +124,7 @@ SkillGuard 综合使用以下三类信号评估 Skill 版本的运行状态。
 
 ### 3. 长期未验证
 
-如果某个版本超过 `stale_after_days` 没有执行，SkillGuard 会将其报告为长期未验证。默认情况下，该信号只产生提示；将 `stale_is_degraded` 设为 `True` 后，也可直接将其视为退化。
+如果某个版本超过 `stale_after_days` 没有执行，SkillPulse 会将其报告为长期未验证。默认情况下，该信号只产生提示；将 `stale_is_degraded` 设为 `True` 后，也可直接将其视为退化。
 
 检测参数通过 `HealthConfig` 配置，灰度验证参数通过 `ProbationConfig` 配置。
 
@@ -159,7 +159,7 @@ SkillGuard 综合使用以下三类信号评估 Skill 版本的运行状态。
 为了提高归因质量，建议在记录执行结果时提供 `model` 和 `task_tag`：
 
 ```bash
-skillguard record scraper \
+skillpulse record scraper \
   --fail \
   --error "SelectorNotFound" \
   --model claude-sonnet \
@@ -204,7 +204,7 @@ python -m demo.simulate
 
 1. 页面标题抓取 Skill 在初始阶段保持正常。
 2. 目标网站调整 HTML 结构，旧选择器开始持续失败。
-3. SkillGuard 检测到成功率显著下降并归因为环境变化。
+3. SkillPulse 检测到成功率显著下降并归因为环境变化。
 4. 修复版本以 candidate 状态创建，暂不承接线上流量。
 5. 回放历史成功/失败样本，验证修复率和回归率。
 6. 回放通过后进入 probation，并接受线上灰度验证。
@@ -213,7 +213,7 @@ python -m demo.simulate
 
 ## ToolCall 与 SkillRun
 
-SkillGuard 明确区分两层执行数据：
+SkillPulse 明确区分两层执行数据：
 
 - `ToolCall`：Agent 会话中的单次工具调用。
 - `SkillRun`：一次完整 Skill 执行的最终结果，其中可以包含多个 ToolCall。
@@ -222,11 +222,11 @@ Claude Code 和 Codex 的本地日志主要暴露工具调用，因此 `ingest` 
 它不会把一次工具调用成功等同于整个 Skill 成功，也不会把工具名自动注册为 Skill。
 
 ```bash
-skillguard ingest ~/.claude/projects --format claude
-skillguard ingest ~/.codex/sessions --format codex
+skillpulse ingest ~/.claude/projects --format claude
+skillpulse ingest ~/.codex/sessions --format codex
 ```
 
-导入过程支持幂等执行。SkillGuard 根据会话文件路径和原始 call ID 生成稳定标识，
+导入过程支持幂等执行。SkillPulse 根据会话文件路径和原始 call ID 生成稳定标识，
 重复导入同一日志不会产生重复数据。CLI 会分别报告 `added`、`duplicates`、
 `skipped` 和 `files`。没有匹配结果的调用会作为不完整记录跳过。
 

@@ -1,4 +1,4 @@
-"""SkillGuard command-line interface."""
+"""SkillPulse command-line interface."""
 
 from __future__ import annotations
 
@@ -141,7 +141,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
               f"{'; '.join(report.reasons)}")
     if flagged:
         print(f"\nflagged {len(flagged)} skill(s) as DEGRADED: {', '.join(flagged)}")
-        print("next: `skillguard attribute <skill_id>`")
+        print("next: `skillpulse attribute <skill_id>`")
     else:
         print("\nno new degradations flagged")
 
@@ -178,7 +178,7 @@ def cmd_repair(args: argparse.Namespace) -> None:
         note = "stub repair"
     candidate = manager.repair(args.skill_id, repair_fn, note=note)
     print(f"created {candidate.key} in CANDIDATE state")
-    print(f"next: `skillguard replay {args.skill_id} {candidate.version} "
+    print(f"next: `skillpulse replay {args.skill_id} {candidate.version} "
           "--results replay-results.json` (probation requires a passing replay)")
 
 
@@ -267,9 +267,9 @@ def _out_format(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="skillguard",
+        prog="skillpulse",
         description="Runtime health and safe lifecycle management for Agent Skills")
-    parser.add_argument("--db", default="skillguard.db")
+    parser.add_argument("--db", default="skillpulse.db")
     sub = parser.add_subparsers(dest="command", required=True)
 
     command = sub.add_parser("add")

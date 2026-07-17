@@ -1,4 +1,4 @@
-"""Machine-readable JSON reports for SkillGuard."""
+"""Machine-readable JSON reports for SkillPulse."""
 
 from __future__ import annotations
 

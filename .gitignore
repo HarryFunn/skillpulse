@@ -9,7 +9,7 @@ dist/
 .venv/
 venv/
 
-# SkillGuard runtime data
+# SkillPulse runtime data
 *.db
 
 # OS / editor

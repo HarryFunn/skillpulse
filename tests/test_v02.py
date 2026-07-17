@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from skillguard import (
+from skillpulse import (
     HealthChecker,
     JsonReporter,
     LifecycleManager,
@@ -18,8 +18,8 @@ from skillguard import (
     SkillStore,
     ToolCall,
 )
-from skillguard.cli import main
-from skillguard.lifecycle import ProbationConfig
+from skillpulse.cli import main
+from skillpulse.lifecycle import ProbationConfig
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@
 
 Detecting *that* a skill degraded is not enough to decide what to do about it.
 The same symptom (success rate fell) has very different fixes depending on the
-cause. SkillGuard attributes a degradation to one of four root causes and maps
+cause. SkillPulse attributes a degradation to one of four root causes and maps
 each to a recommended action:
 
     ENVIRONMENT_DRIFT  external world changed (API/page/schema)   -> repair skill

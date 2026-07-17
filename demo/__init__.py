@@ -1,1 +1,1 @@
-"""SkillGuard demos."""
+"""SkillPulse demos."""

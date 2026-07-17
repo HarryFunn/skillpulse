@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from skillguard import Attributor, Cause, ExecutionRecord, LifecycleManager, SkillStore
+from skillpulse import Attributor, Cause, ExecutionRecord, LifecycleManager, SkillStore
 
 
 @pytest.fixture

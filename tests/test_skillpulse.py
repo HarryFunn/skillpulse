@@ -1,10 +1,10 @@
-"""Tests for SkillGuard health detection and lifecycle management."""
+"""Tests for SkillPulse health detection and lifecycle management."""
 
 from __future__ import annotations
 
 import pytest
 
-from skillguard import (
+from skillpulse import (
     ExecutionRecord,
     HealthChecker,
     HealthConfig,
@@ -12,7 +12,7 @@ from skillguard import (
     SkillState,
     SkillStore,
 )
-from skillguard.lifecycle import ProbationConfig
+from skillpulse.lifecycle import ProbationConfig
 
 
 @pytest.fixture

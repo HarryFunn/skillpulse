@@ -1,4 +1,4 @@
-"""SkillGuard: runtime health and safe lifecycle management for Agent Skills."""
+"""SkillPulse: runtime health and safe lifecycle management for Agent Skills."""
 
 __version__ = "0.2.0"
 
