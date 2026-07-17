@@ -21,7 +21,7 @@
 
 ---
 
-SkillPulse evaluates each Agent Skill version from its real execution history. It detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → submit candidate → offline replay → canary → promote/rollback** workflow. Candidate content is authored externally by a human, LLM, or deterministic repair rule; SkillPulse validates and manages it rather than generating it.
+SkillPulse evaluates each Agent Skill version from its real execution history. It detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → submit candidate → offline replay → canary → promote/rollback** workflow.
 
 Unlike tools that rely only on upstream versions, Git commits, or file hashes, SkillPulse measures whether a Skill still works in practice.
 
@@ -34,9 +34,9 @@ Unlike tools that rely only on upstream versions, Git commits, or file hashes, S
   know *what to do*. SkillPulse attributes each degradation to one of four
   causes — environment drift, model change, task drift, or an intrinsic skill
   defect — and maps each to a different recommended action.
-- **External candidates are gated.** A human, LLM, or rule authors the candidate;
-  SkillPulse first replays history, then admits passing candidates to a canary
-  trial. Failed candidates never replace the incumbent.
+- **Candidates are gated in stages.** SkillPulse first replays history, then
+  admits passing candidates to a canary trial. Failed candidates never replace
+  the incumbent.
 - **Full audit trail.** Every state change is logged, so you can explain why any
   version was flagged, submitted, promoted, or retired.
 - **Zero dependencies.** Pure standard library + SQLite. Works as a library or a
@@ -63,8 +63,8 @@ skillpulse status
 skillpulse doctor
 skillpulse attribute scraper
 
-# submit a candidate authored by a human, LLM, or deterministic rule
-skillpulse repair scraper --content-file externally-authored-skill.txt
+# submit a candidate; it cannot receive live traffic yet
+skillpulse repair scraper --content-file candidate-skill.txt
 
 # replay-results.json maps historical run_id -> candidate outcome
 skillpulse replay scraper 2 --results replay-results.json
@@ -95,10 +95,9 @@ store.record_skill_run(SkillRun(
 ))
 
 if manager.scan():
-    # The provider authors the candidate; SkillPulse only manages validation.
     candidate = manager.repair(
         "scraper",
-        repair_fn=lambda old, reasons: external_repair_provider(old, reasons),
+        repair_fn=lambda old, reasons: generate_candidate(old, reasons),
     )
     replay = manager.replay(
         "scraper", candidate.version,
@@ -142,14 +141,6 @@ action:
 Attribution needs the optional `model` and `task_tag` fields on execution
 records (`skillpulse record ... --model <m> --tag <t>`). Thresholds live in
 `AttributionConfig`.
-
-## Who authors a candidate?
-
-SkillPulse does not generate Skill content. The `repair_fn` extension point may
-call a human workflow, an LLM, or deterministic repair rules. The CLI requires
-an explicit `--content-file` and never creates a placeholder candidate.
-SkillPulse takes responsibility after submission: persistence, offline replay,
-live canary evaluation, promotion, and rejection.
 
 ## Two-level candidate gate
 
