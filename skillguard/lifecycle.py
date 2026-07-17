@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .health import HealthChecker, HealthConfig
-from .models import SkillState, SkillVersion
+from .models import ReplayReport, SkillState, SkillVersion
+from .replay import ReplayConfig, ReplayFn, ReplayGate
 from .store import SkillStore
 
 # A repair function takes (old content, degradation reasons) and returns new content.
@@ -38,10 +39,12 @@ class ProbationConfig:
 class LifecycleManager:
     def __init__(self, store: SkillStore,
                  health_config: HealthConfig | None = None,
-                 probation_config: ProbationConfig | None = None) -> None:
+                 probation_config: ProbationConfig | None = None,
+                 replay_config: ReplayConfig | None = None) -> None:
         self.store = store
         self.checker = HealthChecker(store, health_config)
         self.probation = probation_config or ProbationConfig()
+        self.replay_gate = ReplayGate(store, replay_config)
 
     # -- routing -------------------------------------------------------------
 
@@ -93,8 +96,10 @@ class LifecycleManager:
 
     def repair(self, skill_id: str, repair_fn: RepairFn,
                note: str = "auto-repair") -> SkillVersion:
-        """Create a repaired CANDIDATE version from the degraded/active version
-        and immediately move it into PROBATION.
+        """Create a repaired CANDIDATE version.
+
+        The candidate cannot receive traffic until `replay()` passes and moves
+        it into PROBATION.
         """
         skill = self.store.get_skill(skill_id)
         if skill is None:
@@ -107,14 +112,31 @@ class LifecycleManager:
         report = self.checker.check(skill_id, current.version)
 
         new_content = repair_fn(current.content, report.reasons)
-        candidate = self.store.add_version(
+        return self.store.add_version(
             skill_id, new_content,
             parent_version=current.version,
             repair_note=f"{note}; triggered by: {'; '.join(report.reasons)}",
         )
-        self.store.set_version_state(skill_id, candidate.version, SkillState.PROBATION)
-        candidate.state = SkillState.PROBATION
-        return candidate
+
+    def replay(self, skill_id: str, candidate_version: int,
+               replay_fn: ReplayFn) -> ReplayReport:
+        """Run the offline replay gate and admit passing candidates to probation."""
+        candidate = self.store.get_version(skill_id, candidate_version)
+        if candidate is None:
+            raise KeyError(f"unknown version: {skill_id}@{candidate_version}")
+        if candidate.state != SkillState.CANDIDATE:
+            raise ValueError(
+                f"replay requires CANDIDATE state, got {candidate.state.value}")
+        report = self.replay_gate.evaluate(skill_id, candidate_version, replay_fn)
+        if report.passed:
+            self.store.set_version_state(skill_id, candidate_version,
+                                         SkillState.PROBATION)
+            self.store.log_event(skill_id, "replay_admitted", {
+                "version": candidate_version,
+                "fix_rate": report.fix_rate,
+                "regression_rate": report.regression_rate,
+            })
+        return report
 
     # -- probation decisions ---------------------------------------------------
 
@@ -127,7 +149,9 @@ class LifecycleManager:
         if probation_version is None:
             return "pending"
 
-        runs = self.store.get_executions(skill_id, probation_version.version)
+        runs = self.store.get_skill_runs(skill_id, probation_version.version)
+        if not runs:
+            runs = self.store.get_executions(skill_id, probation_version.version)
         if len(runs) < self.probation.min_trials:
             return "pending"
 

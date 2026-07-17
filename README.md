@@ -52,58 +52,59 @@ pip install -e .          # from the repo root
 ## Quick start (CLI)
 
 ```bash
-# register a skill (first version is auto-activated)
+# register a Skill; v1 becomes active
 skillguard add scraper --name "Scrape page title" --content-file skill.txt
 
-# stream in execution outcomes as your agent runs the skill
-skillguard record scraper --ok
-skillguard record scraper --fail --error "SelectorNotFound"
+# record the final outcome of complete Skill executions
+skillguard run-record scraper --ok --run-id run-001
+skillguard run-record scraper --fail --run-id run-002 \
+  --error "SelectorNotFound" --model claude-sonnet --tag web-scraping
 
-# see the whole library's health at a glance
 skillguard status
-
-# run degradation detection; degraded skills are flagged
 skillguard doctor
-
-# root-cause the degradation and get a recommended action
 skillguard attribute scraper
 
-# create a repaired version -> starts a canary probation trial
+# repair creates a CANDIDATE; it cannot receive traffic yet
 skillguard repair scraper --content-file fixed_skill.txt
 
-# after the canary has served enough traffic, decide its fate
+# replay-results.json maps historical run_id -> candidate outcome
+skillguard replay scraper 2 --results replay-results.json
+
+# only a replay-approved candidate enters probation
 skillguard evaluate scraper      # -> promoted | rejected | pending
 
-# inspect the version tree and audit events
-skillguard history scraper
+# export a machine-readable report
+skillguard report --output report.json
 ```
 
 ## Quick start (library)
 
 ```python
-from skillguard import SkillStore, LifecycleManager, ExecutionRecord
+from skillguard import LifecycleManager, SkillRun, SkillStore
 
 store = SkillStore("skills.db")
-mgr = LifecycleManager(store)
-
+manager = LifecycleManager(store)
 store.add_skill("scraper", "Scrape page title", content="selector = 'head > title'")
-mgr.activate_initial("scraper")
+manager.activate_initial("scraper")
 
-# record outcomes as the agent runs
-store.record_execution(ExecutionRecord("scraper", 1, success=True))
+store.record_skill_run(SkillRun(
+    run_id="run-001",
+    skill_id="scraper",
+    version=1,
+    success=True,
+    input_data={"url": "https://example.test"},
+))
 
-# periodically scan for degradation
-flagged = mgr.scan()
-
-# repair a degraded skill (plug your own LLM / human fix into repair_fn)
-if flagged:
-    mgr.repair("scraper", repair_fn=lambda old, reasons: fix(old, reasons))
-
-# route calls: the canary gets a slice of traffic, the incumbent the rest
-version = mgr.route("scraper")
-
-# decide promote/rollback once the canary has enough trials
-mgr.evaluate_probation("scraper")
+if manager.scan():
+    candidate = manager.repair(
+        "scraper", repair_fn=lambda old, reasons: fix(old, reasons))
+    replay = manager.replay(
+        "scraper", candidate.version,
+        replay_fn=lambda candidate_content, historical_run: replay_in_sandbox(
+            candidate_content, historical_run.input_data),
+    )
+    if replay.passed:
+        version = manager.route("scraper")  # canary is now eligible
 ```
 
 ## How degradation is detected
@@ -140,17 +141,23 @@ Attribution needs the optional `model` and `task_tag` fields on execution
 records (`skillguard record ... --model <m> --tag <t>`). Thresholds live in
 `AttributionConfig`.
 
-## Lifecycle state machine
+## Two-level repair gate
 
 ```
-candidate ──activate/promote──► active ──degradation detected──► degraded
-    ▲                             │                                  │
-    │                             │ repair()                         │ repair()
-    └─────────── probation ◄──────┴──────────────────────────────────┘
-                    │
-        promote (passes bar) ──► active   (old version ──► retired)
-        rollback (fails bar) ──► rejected (incumbent keeps serving)
+active ──degradation──► degraded ──repair──► candidate
+                                                │
+                                   offline replay gate
+                                   ├── fail ──► candidate
+                                   └── pass ──► probation
+                                                    │
+                                      live canary evaluation
+                                      ├── pass ──► active (old -> retired)
+                                      └── fail ──► rejected
 ```
+
+Offline replay measures both `fix_rate` on historical failures and
+`regression_rate` on historical successes. A candidate must satisfy both
+thresholds before it can receive live canary traffic.
 
 ## Try the demo
 
@@ -162,29 +169,32 @@ Simulates a scraper skill that breaks when the target site changes its HTML:
 SkillGuard detects the drop, flags it, accepts a repaired version into a canary
 trial, and promotes it once proven — printing the full audit trail.
 
-## Ingest your real usage
+## ToolCall vs SkillRun
 
-Instead of synthetic data, point SkillGuard at your agent's local session logs.
-It pairs each tool/skill call with its outcome and records it, auto-registering
-skills it hasn't seen.
+SkillGuard deliberately separates two levels of evidence:
+
+- `ToolCall`: one tool invocation inside an agent session.
+- `SkillRun`: the final outcome of a complete Skill execution, which may contain
+  multiple tool calls.
+
+Claude Code and Codex transcripts expose tool calls, so `ingest` stores
+`ToolCall` records only. It does not equate a successful tool call with a
+successful Skill and does not auto-register tool names as Skills.
 
 ```bash
-# Claude Code transcripts
 skillguard ingest ~/.claude/projects --format claude
-
-# Codex rollouts
 skillguard ingest ~/.codex/sessions --format codex
-
-# then analyze your own history
-skillguard status
-skillguard doctor
-skillguard attribute <skill_id>
 ```
 
-Outcome heuristics: for Claude Code a `tool_result` with `is_error: true` is a
-failure; for Codex a non-zero `exit_code` or an `error` field in the tool output
-is a failure. `model` and `task_tag` (from the session's cwd) are captured to
-power attribution. A call with no matching result is skipped as incomplete.
+Import is idempotent. Stable IDs derived from the transcript path and original
+call ID prevent repeated imports from duplicating data. The CLI reports
+`added`, `duplicates`, `skipped`, and `files` counts. Calls with no matching
+result are skipped as incomplete.
+
+Record the final Skill outcome separately with `run-record` or the Python
+`record_skill_run()` API. Imported calls can be attached with repeatable
+`--tool-call-id <stable-id>` arguments. Health detection, attribution, replay,
+and probation then use SkillRun outcomes rather than raw tool-call success.
 
 ## Run the tests
 

@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skillguard"
-version = "0.1.0"
+version = "0.2.0"
 description = "Version management and degradation detection for agent skill libraries"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Feng Haohuan" }]
 keywords = ["llm", "agent", "skills", "degradation-detection", "lifecycle"]
 dependencies = []

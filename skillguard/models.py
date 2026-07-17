@@ -53,7 +53,12 @@ class Skill:
 
 @dataclass
 class ExecutionRecord:
-    """Outcome of one invocation of a specific skill version."""
+    """Legacy direct outcome record for one skill-version invocation.
+
+    New integrations should prefer `SkillRun`, which represents the final
+    skill-level outcome and can own multiple `ToolCall` records. This model is
+    retained for backwards compatibility and low-level/manual instrumentation.
+    """
 
     skill_id: str
     version: int
@@ -63,6 +68,71 @@ class ExecutionRecord:
     error: str = ""                    # error class/message on failure
     task_tag: str = ""                 # optional task-type label
     model: str = ""                    # model that ran the skill (for attribution)
+    execution_id: str = ""             # stable source id; empty for manual records
+    source: str = "manual"
+
+
+@dataclass
+class ToolCall:
+    """One tool invocation observed inside an agent session or SkillRun."""
+
+    call_id: str
+    name: str
+    success: bool
+    ts: float = field(default_factory=time.time)
+    session_id: str = ""
+    run_id: str | None = None
+    model: str = ""
+    error: str = ""
+    task_tag: str = ""
+    source: str = "manual"
+    source_path: str = ""
+
+
+@dataclass
+class SkillRun:
+    """Final outcome of one Skill execution, distinct from its tool calls."""
+
+    run_id: str
+    skill_id: str
+    version: int
+    success: bool
+    ts: float = field(default_factory=time.time)
+    input_data: dict = field(default_factory=dict)
+    output_data: dict = field(default_factory=dict)
+    error: str = ""
+    task_tag: str = ""
+    model: str = ""
+    source: str = "manual"
+    session_id: str = ""
+
+
+@dataclass
+class ReplayCase:
+    """A historical SkillRun evaluated against a repaired candidate."""
+
+    run_id: str
+    baseline_success: bool
+    candidate_success: bool
+    error: str = ""
+
+
+@dataclass
+class ReplayReport:
+    """Offline replay gate result for a candidate skill version."""
+
+    skill_id: str
+    candidate_version: int
+    parent_version: int
+    total_cases: int
+    failed_cases: int
+    successful_cases: int
+    fixed_failures: int
+    regressions: int
+    fix_rate: float
+    regression_rate: float
+    passed: bool
+    reasons: list[str] = field(default_factory=list)
 
 
 @dataclass

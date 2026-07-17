@@ -17,7 +17,7 @@ import math
 import time
 from dataclasses import dataclass
 
-from .models import ExecutionRecord, HealthReport
+from .models import ExecutionRecord, HealthReport, SkillRun
 from .store import SkillStore
 
 
@@ -41,7 +41,10 @@ class HealthChecker:
     def check(self, skill_id: str, version: int, now: float | None = None) -> HealthReport:
         now = now or time.time()
         cfg = self.config
-        runs = self.store.get_executions(skill_id, version)
+        runs = self.store.get_skill_runs(skill_id, version)
+        if not runs:
+            # Backwards compatibility for v0.1/manual instrumentation.
+            runs = self.store.get_executions(skill_id, version)
 
         n_total = len(runs)
         if n_total == 0:
@@ -108,11 +111,11 @@ class HealthChecker:
         return reports
 
 
-def _success_rate(runs: list[ExecutionRecord]) -> float:
+def _success_rate(runs: list[ExecutionRecord] | list[SkillRun]) -> float:
     return sum(r.success for r in runs) / len(runs)
 
 
-def _ewma(runs: list[ExecutionRecord], alpha: float) -> float:
+def _ewma(runs: list[ExecutionRecord] | list[SkillRun], alpha: float) -> float:
     value = 1.0 if runs[0].success else 0.0
     for r in runs[1:]:
         value = alpha * (1.0 if r.success else 0.0) + (1 - alpha) * value

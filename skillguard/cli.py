@@ -1,36 +1,50 @@
-"""Command-line interface for SkillGuard.
-
-Commands:
-    add       register a new skill (first version auto-activated)
-    record    record one execution outcome for a skill version
-    status    show the whole library's health at a glance
-    doctor    run degradation detection, flag degraded skills
-    attribute root-cause a degradation and recommend an action
-    repair    create a repaired version (stub repair or from a file) -> probation
-    evaluate  decide promote/reject for a probation version
-    promote   manually promote a version to active
-    rollback  manually reject a version
-    history   show the version tree and audit events of one skill
-    ingest    import real agent session logs (Claude Code / Codex) as records
-"""
+"""SkillGuard command-line interface."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
+import uuid
+from dataclasses import asdict
 from pathlib import Path
 
 from .attribution import Attributor
 from .health import HealthChecker
 from .ingest import SessionIngestor
 from .lifecycle import LifecycleManager
-from .models import ExecutionRecord
+from .models import ExecutionRecord, SkillRun
+from .reporting import JsonReporter
 from .store import SkillStore
 
 
 def _fmt_rate(rate: float | None) -> str:
     return f"{rate:.0%}" if rate is not None else "-"
+
+
+def _json(data: dict | list) -> None:
+    print(json.dumps(_json_safe(data), indent=2, sort_keys=True, allow_nan=False))
+
+
+def _json_safe(value):
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _version(store: SkillStore, skill_id: str, explicit: int | None) -> int:
+    skill = store.get_skill(skill_id)
+    if skill is None:
+        sys.exit(f"unknown skill: {skill_id}")
+    version = explicit if explicit is not None else skill.active_version
+    if version is None:
+        sys.exit(f"skill {skill_id} has no active version; pass --version")
+    return version
 
 
 def cmd_add(args: argparse.Namespace) -> None:
@@ -44,41 +58,73 @@ def cmd_add(args: argparse.Namespace) -> None:
 
 def cmd_record(args: argparse.Namespace) -> None:
     store = SkillStore(args.db)
-    skill = store.get_skill(args.skill_id)
-    if skill is None:
-        sys.exit(f"unknown skill: {args.skill_id}")
-    version = args.version if args.version is not None else skill.active_version
-    if version is None:
-        sys.exit(f"skill {args.skill_id} has no active version; pass --version")
-    store.record_execution(ExecutionRecord(
+    version = _version(store, args.skill_id, args.version)
+    added = store.record_execution(ExecutionRecord(
         skill_id=args.skill_id, version=version, success=args.success,
         latency_ms=args.latency_ms, error=args.error or "", task_tag=args.tag or "",
-        model=args.model or "",
+        model=args.model or "", execution_id=args.execution_id or "",
+        source=args.source,
     ))
-    print(f"recorded {'success' if args.success else 'FAILURE'} "
-          f"for {args.skill_id}@{version}")
+    print(f"{'recorded' if added else 'duplicate'} "
+          f"{'success' if args.success else 'FAILURE'} for {args.skill_id}@{version}")
+
+
+def cmd_run_record(args: argparse.Namespace) -> None:
+    store = SkillStore(args.db)
+    version = _version(store, args.skill_id, args.version)
+    run_id = args.run_id or f"manual:{uuid.uuid4().hex}"
+    added = store.record_skill_run(SkillRun(
+        run_id=run_id, skill_id=args.skill_id, version=version,
+        success=args.success, error=args.error or "", task_tag=args.tag or "",
+        model=args.model or "", source=args.source,
+        session_id=args.session_id or "",
+        input_data=_load_json(args.input_json),
+        output_data=_load_json(args.output_json),
+    ))
+    linked = store.link_tool_calls(run_id, args.tool_call_id or []) if added else 0
+    payload = {"run_id": run_id, "skill_id": args.skill_id,
+               "version": version, "added": added,
+               "linked_tool_calls": linked}
+    if args.format == "json":
+        _json(payload)
+    else:
+        print(f"{'recorded' if added else 'duplicate'} SkillRun {run_id} "
+              f"for {args.skill_id}@{version}")
+
+
+def _load_json(path: str | None) -> dict:
+    if not path:
+        return {}
+    value = json.loads(Path(path).read_text())
+    if not isinstance(value, dict):
+        raise ValueError(f"expected JSON object in {path}")
+    return value
 
 
 def cmd_status(args: argparse.Namespace) -> None:
     store = SkillStore(args.db)
+    if args.format == "json":
+        _json(JsonReporter(store).library())
+        return
     checker = HealthChecker(store)
     skills = store.list_skills()
     if not skills:
         print("library is empty")
         return
-    header = f"{'skill':<20} {'ver':>3} {'state':<10} {'runs':>5} {'recent':>7} {'ewma':>6} {'stale(d)':>9} status"
+    header = (f"{'skill':<20} {'ver':>3} {'state':<10} {'runs':>5} "
+              f"{'recent':>7} {'ewma':>6} {'stale(d)':>9} status")
     print(header)
     print("-" * len(header))
     for skill in skills:
         if skill.active_version is None:
             print(f"{skill.skill_id:<20} {'-':>3} {'no active':<10}")
             continue
-        v = store.get_version(skill.skill_id, skill.active_version)
-        r = checker.check(skill.skill_id, skill.active_version)
-        stale = "-" if math.isinf(r.staleness_days) else f"{r.staleness_days:.1f}"
-        print(f"{skill.skill_id:<20} {r.version:>3} {v.state.value:<10} "
-              f"{r.n_total:>5} {_fmt_rate(r.recent_rate):>7} "
-              f"{_fmt_rate(r.ewma_rate):>6} {stale:>9} {r.status}")
+        version = store.get_version(skill.skill_id, skill.active_version)
+        report = checker.check(skill.skill_id, skill.active_version)
+        stale = "-" if math.isinf(report.staleness_days) else f"{report.staleness_days:.1f}"
+        print(f"{skill.skill_id:<20} {report.version:>3} {version.state.value:<10} "
+              f"{report.n_total:>5} {_fmt_rate(report.recent_rate):>7} "
+              f"{_fmt_rate(report.ewma_rate):>6} {stale:>9} {report.status}")
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -86,33 +132,38 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     manager = LifecycleManager(store)
     reports = manager.checker.check_all_active()
     flagged = manager.scan()
-    for r in reports:
-        marker = "!!" if r.degraded else "ok"
-        print(f"[{marker}] {r.skill_id}@{r.version}: {'; '.join(r.reasons)}")
+    if args.format == "json":
+        _json({"flagged": flagged, "reports": [asdict(r) for r in reports]})
+        return
+    for report in reports:
+        marker = "!!" if report.degraded else "ok"
+        print(f"[{marker}] {report.skill_id}@{report.version}: "
+              f"{'; '.join(report.reasons)}")
     if flagged:
         print(f"\nflagged {len(flagged)} skill(s) as DEGRADED: {', '.join(flagged)}")
-        print("next: `skillguard attribute <skill_id>` to find the root cause and recommended action")
+        print("next: `skillguard attribute <skill_id>`")
     else:
         print("\nno new degradations flagged")
 
 
 def cmd_attribute(args: argparse.Namespace) -> None:
     store = SkillStore(args.db)
-    skill = store.get_skill(args.skill_id)
-    if skill is None:
-        sys.exit(f"unknown skill: {args.skill_id}")
-    version = args.version if args.version is not None else skill.active_version
-    if version is None:
-        sys.exit(f"skill {args.skill_id} has no active version; pass --version")
+    version = _version(store, args.skill_id, args.version)
     report = Attributor(store).attribute(args.skill_id, version)
+    payload = {"skill_id": report.skill_id, "version": report.version,
+               "cause": report.cause.value, "confidence": report.confidence,
+               "recommended_action": report.recommended_action,
+               "scores": report.scores, "evidence": report.evidence}
+    if args.format == "json":
+        _json(payload)
+        return
     print(f"{args.skill_id}@{version}")
-    print(f"  root cause : {report.cause.value}  (confidence {report.confidence:.0%})")
+    print(f"  root cause : {report.cause.value} (score {report.confidence:.2f})")
     print(f"  action     : {report.recommended_action}")
     print("  scores     : " + ", ".join(f"{k}={v:.2f}" for k, v in report.scores.items()))
     print("  evidence   :")
-    for e in report.evidence:
-        print(f"    - {e}")
-
+    for evidence in report.evidence:
+        print(f"    - {evidence}")
 
 
 def cmd_repair(args: argparse.Namespace) -> None:
@@ -120,48 +171,69 @@ def cmd_repair(args: argparse.Namespace) -> None:
     manager = LifecycleManager(store)
     if args.content_file:
         new_content = Path(args.content_file).read_text()
-        repair_fn = lambda old, reasons: new_content
+        repair_fn = lambda _old, _reasons: new_content
         note = f"manual repair from {args.content_file}"
     else:
-        # placeholder repair: annotate the content; real deployments plug in an LLM here
-        repair_fn = lambda old, reasons: old + f"\n# repair needed, reasons: {reasons}"
-        note = "stub repair (no content file given)"
+        repair_fn = lambda old, reasons: old + f"\n# repair needed: {reasons}"
+        note = "stub repair"
     candidate = manager.repair(args.skill_id, repair_fn, note=note)
-    print(f"created {candidate.key} in PROBATION "
-          f"(gets {manager.probation.traffic_share:.0%} of traffic)")
-    print(f"promote bar: >={manager.probation.promote_threshold:.0%} success "
-          f"over >={manager.probation.min_trials} trials, then `skillguard evaluate {args.skill_id}`")
+    print(f"created {candidate.key} in CANDIDATE state")
+    print(f"next: `skillguard replay {args.skill_id} {candidate.version} "
+          "--results replay-results.json` (probation requires a passing replay)")
+
+
+def cmd_replay(args: argparse.Namespace) -> None:
+    store = SkillStore(args.db)
+    raw = json.loads(Path(args.results).read_text())
+    if not isinstance(raw, dict):
+        sys.exit("replay results must be a JSON object: {run_id: bool}")
+    if any(not isinstance(value, bool) for value in raw.values()):
+        sys.exit("replay result values must be JSON booleans, not strings/numbers")
+    results = {str(key): value for key, value in raw.items()}
+    manager = LifecycleManager(store)
+    report = manager.replay(
+        args.skill_id, args.version,
+        lambda _content, run: results.get(run.run_id, False),
+    )
+    payload = asdict(report)
+    if args.format == "json":
+        _json(payload)
+        return
+    decision = "PASSED -> PROBATION" if report.passed else "FAILED -> CANDIDATE"
+    print(f"offline replay {decision}")
+    print(f"  cases={report.total_cases} fix_rate={report.fix_rate:.0%} "
+          f"regression_rate={report.regression_rate:.0%}")
+    for reason in report.reasons:
+        print(f"  - {reason}")
 
 
 def cmd_evaluate(args: argparse.Namespace) -> None:
-    store = SkillStore(args.db)
-    manager = LifecycleManager(store)
-    outcome = manager.evaluate_probation(args.skill_id)
+    outcome = LifecycleManager(SkillStore(args.db)).evaluate_probation(args.skill_id)
     print(f"probation decision for {args.skill_id}: {outcome}")
 
 
 def cmd_promote(args: argparse.Namespace) -> None:
-    store = SkillStore(args.db)
-    LifecycleManager(store).promote(args.skill_id, args.version)
+    LifecycleManager(SkillStore(args.db)).promote(args.skill_id, args.version)
     print(f"promoted {args.skill_id}@{args.version} to ACTIVE")
 
 
 def cmd_rollback(args: argparse.Namespace) -> None:
-    store = SkillStore(args.db)
-    LifecycleManager(store).rollback(args.skill_id, args.version)
+    LifecycleManager(SkillStore(args.db)).rollback(args.skill_id, args.version)
     print(f"rejected {args.skill_id}@{args.version}")
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
     store = SkillStore(args.db)
-    ingestor = SessionIngestor(store, auto_register=not args.no_register)
+    ingestor = SessionIngestor(store)
     path = Path(args.path)
-    if path.is_dir():
-        n = ingestor.ingest_dir(path, args.format, pattern=args.pattern)
+    result = (ingestor.ingest_dir(path, args.format, pattern=args.pattern)
+              if path.is_dir() else ingestor.ingest_file(path, args.format))
+    if args.format_output == "json":
+        _json(result.to_dict())
     else:
-        n = ingestor.ingest_file(path, args.format)
-    print(f"ingested {n} execution record(s) from {args.format} session(s)")
-    print("next: `skillguard status` / `skillguard doctor`")
+        print(f"files={result.files} added={result.added} "
+              f"duplicates={result.duplicates} skipped={result.skipped}")
+        print("imported records are ToolCalls; create SkillRuns with `run-record`")
 
 
 def cmd_history(args: argparse.Namespace) -> None:
@@ -169,87 +241,121 @@ def cmd_history(args: argparse.Namespace) -> None:
     skill = store.get_skill(args.skill_id)
     if skill is None:
         sys.exit(f"unknown skill: {args.skill_id}")
-    print(f"skill: {skill.skill_id} ({skill.name})  active=v{skill.active_version}")
+    print(f"skill: {skill.skill_id} ({skill.name}) active=v{skill.active_version}")
     print("\nversions:")
-    for v in store.list_versions(args.skill_id):
-        parent = f" <- v{v.parent_version}" if v.parent_version else ""
-        note = f"  ({v.repair_note})" if v.repair_note else ""
-        print(f"  v{v.version}{parent} [{v.state.value}]{note}")
+    for version in store.list_versions(args.skill_id):
+        parent = f" <- v{version.parent_version}" if version.parent_version else ""
+        note = f" ({version.repair_note})" if version.repair_note else ""
+        print(f"  v{version.version}{parent} [{version.state.value}]{note}")
     print("\nevents:")
-    for e in store.get_events(args.skill_id):
-        print(f"  {e['kind']}: {e['payload']}")
+    for event in store.get_events(args.skill_id):
+        print(f"  {event['kind']}: {event['payload']}")
+
+
+def cmd_report(args: argparse.Namespace) -> None:
+    text = JsonReporter(SkillStore(args.db)).dumps()
+    if args.output:
+        Path(args.output).write_text(text + "\n")
+        print(f"wrote JSON report to {args.output}")
+    else:
+        print(text)
+
+
+def _out_format(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--format", choices=["text", "json"], default="text")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="skillguard",
-                                description="Skill library version management and degradation detection")
-    p.add_argument("--db", default="skillguard.db", help="path to the sqlite database")
-    sub = p.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="skillguard",
+        description="Runtime health and safe lifecycle management for Agent Skills")
+    parser.add_argument("--db", default="skillguard.db")
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    sp = sub.add_parser("add", help="register a new skill")
-    sp.add_argument("skill_id")
-    sp.add_argument("--name")
-    sp.add_argument("--description", default="")
-    sp.add_argument("--content-file", help="file with the skill body (code/prompt)")
-    sp.set_defaults(func=cmd_add)
+    command = sub.add_parser("add")
+    command.add_argument("skill_id")
+    command.add_argument("--name")
+    command.add_argument("--description", default="")
+    command.add_argument("--content-file")
+    command.set_defaults(func=cmd_add)
 
-    sp = sub.add_parser("record", help="record an execution outcome")
-    sp.add_argument("skill_id")
-    outcome = sp.add_mutually_exclusive_group(required=True)
-    outcome.add_argument("--ok", dest="success", action="store_true")
-    outcome.add_argument("--fail", dest="success", action="store_false")
-    sp.add_argument("--version", type=int, help="defaults to the active version")
-    sp.add_argument("--latency-ms", type=float)
-    sp.add_argument("--error", help="error message on failure")
-    sp.add_argument("--tag", help="task-type tag")
-    sp.add_argument("--model", help="model that ran the skill (enables attribution)")
-    sp.set_defaults(func=cmd_record)
+    for name, handler, help_text in (
+        ("record", cmd_record, "record a legacy/manual skill execution"),
+        ("run-record", cmd_run_record, "record a final SkillRun outcome"),
+    ):
+        command = sub.add_parser(name, help=help_text)
+        command.add_argument("skill_id")
+        outcome = command.add_mutually_exclusive_group(required=True)
+        outcome.add_argument("--ok", dest="success", action="store_true")
+        outcome.add_argument("--fail", dest="success", action="store_false")
+        command.add_argument("--version", type=int)
+        command.add_argument("--error")
+        command.add_argument("--tag")
+        command.add_argument("--model")
+        command.add_argument("--source", default="manual")
+        if name == "record":
+            command.add_argument("--latency-ms", type=float)
+            command.add_argument("--execution-id")
+        else:
+            command.add_argument("--run-id")
+            command.add_argument("--session-id")
+            command.add_argument("--input-json")
+            command.add_argument("--output-json")
+            command.add_argument("--tool-call-id", action="append",
+                                 help="attach an imported ToolCall; repeat as needed")
+            _out_format(command)
+        command.set_defaults(func=handler)
 
-    sp = sub.add_parser("status", help="library health overview")
-    sp.set_defaults(func=cmd_status)
+    for name, handler in (("status", cmd_status), ("doctor", cmd_doctor)):
+        command = sub.add_parser(name)
+        _out_format(command)
+        command.set_defaults(func=handler)
 
-    sp = sub.add_parser("doctor", help="run degradation detection and flag skills")
-    sp.set_defaults(func=cmd_doctor)
+    command = sub.add_parser("attribute")
+    command.add_argument("skill_id")
+    command.add_argument("--version", type=int)
+    _out_format(command)
+    command.set_defaults(func=cmd_attribute)
 
-    sp = sub.add_parser("attribute", help="root-cause a degradation and recommend an action")
-    sp.add_argument("skill_id")
-    sp.add_argument("--version", type=int, help="defaults to the active version")
-    sp.set_defaults(func=cmd_attribute)
+    command = sub.add_parser("repair")
+    command.add_argument("skill_id")
+    command.add_argument("--content-file")
+    command.set_defaults(func=cmd_repair)
 
-    sp = sub.add_parser("repair", help="create a repaired version, start probation")
-    sp.add_argument("skill_id")
-    sp.add_argument("--content-file", help="file with the repaired skill body")
-    sp.set_defaults(func=cmd_repair)
+    command = sub.add_parser("replay", help="offline replay gate before probation")
+    command.add_argument("skill_id")
+    command.add_argument("version", type=int)
+    command.add_argument("--results", required=True,
+                         help="JSON object mapping historical run_id to bool")
+    _out_format(command)
+    command.set_defaults(func=cmd_replay)
 
-    sp = sub.add_parser("evaluate", help="promote/reject a probation version")
-    sp.add_argument("skill_id")
-    sp.set_defaults(func=cmd_evaluate)
+    command = sub.add_parser("evaluate")
+    command.add_argument("skill_id")
+    command.set_defaults(func=cmd_evaluate)
 
-    sp = sub.add_parser("promote", help="manually promote a version")
-    sp.add_argument("skill_id")
-    sp.add_argument("version", type=int)
-    sp.set_defaults(func=cmd_promote)
+    for name, handler in (("promote", cmd_promote), ("rollback", cmd_rollback)):
+        command = sub.add_parser(name)
+        command.add_argument("skill_id")
+        command.add_argument("version", type=int)
+        command.set_defaults(func=handler)
 
-    sp = sub.add_parser("rollback", help="manually reject a version")
-    sp.add_argument("skill_id")
-    sp.add_argument("version", type=int)
-    sp.set_defaults(func=cmd_rollback)
+    command = sub.add_parser("history")
+    command.add_argument("skill_id")
+    command.set_defaults(func=cmd_history)
 
-    sp = sub.add_parser("history", help="version tree and audit events for a skill")
-    sp.add_argument("skill_id")
-    sp.set_defaults(func=cmd_history)
+    command = sub.add_parser("ingest")
+    command.add_argument("path")
+    command.add_argument("--format", required=True, choices=["claude", "codex"])
+    command.add_argument("--pattern", default="*.jsonl")
+    command.add_argument("--format-output", choices=["text", "json"], default="text")
+    command.set_defaults(func=cmd_ingest)
 
-    sp = sub.add_parser("ingest", help="import real agent session logs as execution records")
-    sp.add_argument("path", help="a transcript file or a directory of transcripts")
-    sp.add_argument("--format", required=True, choices=["claude", "codex"],
-                    help="session log format")
-    sp.add_argument("--pattern", default="*.jsonl",
-                    help="glob for files when path is a directory (default *.jsonl)")
-    sp.add_argument("--no-register", action="store_true",
-                    help="skip tools that aren't already registered skills")
-    sp.set_defaults(func=cmd_ingest)
+    command = sub.add_parser("report", help="emit the complete JSON report")
+    command.add_argument("--output")
+    command.set_defaults(func=cmd_report)
 
-    return p
+    return parser
 
 
 def main(argv: list[str] | None = None) -> None:

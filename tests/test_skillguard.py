@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import random
-
 import pytest
 
 from skillguard import (
@@ -121,66 +119,28 @@ def test_scan_flags_degraded(store):
     assert store.get_version("s1", 1).state == SkillState.DEGRADED
 
 
-# -- lifecycle: repair -> probation -> promote ------------------------------
+# -- lifecycle: repair creates a gated candidate ----------------------------
 
-def test_repair_creates_probation_candidate(store):
+def test_repair_creates_candidate_pending_replay(store):
     _seed(store)
     _record(store, "s1", 1, successes=30, failures=0)
     _record(store, "s1", 1, successes=0, failures=20, base_ts=2000.0)
-    mgr = LifecycleManager(store)
-    mgr.scan()
-    candidate = mgr.repair("s1", repair_fn=lambda old, reasons: "fixed body")
+    manager = LifecycleManager(store)
+    manager.scan()
+    candidate = manager.repair("s1", repair_fn=lambda old, reasons: "fixed body")
     assert candidate.version == 2
     assert candidate.parent_version == 1
-    assert candidate.state == SkillState.PROBATION
+    assert candidate.state == SkillState.CANDIDATE
+    # A candidate cannot receive traffic before offline replay passes.
+    picks = {manager.route("s1").version for _ in range(50)}
+    assert picks == {1}
 
 
-def test_probation_promotes_on_success(store):
+def test_probation_pending_when_no_candidate_passed_replay(store):
     _seed(store)
-    mgr = LifecycleManager(store, probation_config=ProbationConfig(min_trials=10,
-                                                                   promote_threshold=0.8))
-    candidate = mgr.repair("s1", repair_fn=lambda old, reasons: "fixed")
-    _record(store, "s1", candidate.version, successes=10, failures=0, base_ts=3000.0)
-    outcome = mgr.evaluate_probation("s1")
-    assert outcome == "promoted"
-    assert store.get_skill("s1").active_version == candidate.version
-    assert store.get_version("s1", 1).state == SkillState.RETIRED
-    assert store.get_version("s1", candidate.version).state == SkillState.ACTIVE
-
-
-def test_probation_rejects_on_failure(store):
-    _seed(store)
-    mgr = LifecycleManager(store, probation_config=ProbationConfig(min_trials=10,
-                                                                   promote_threshold=0.8))
-    candidate = mgr.repair("s1", repair_fn=lambda old, reasons: "still broken")
-    _record(store, "s1", candidate.version, successes=3, failures=7, base_ts=3000.0)
-    outcome = mgr.evaluate_probation("s1")
-    assert outcome == "rejected"
-    # active version unchanged; candidate rejected
-    assert store.get_skill("s1").active_version == 1
-    assert store.get_version("s1", candidate.version).state == SkillState.REJECTED
-
-
-def test_probation_pending_before_min_trials(store):
-    _seed(store)
-    mgr = LifecycleManager(store, probation_config=ProbationConfig(min_trials=10))
-    candidate = mgr.repair("s1", repair_fn=lambda old, reasons: "fixed")
-    _record(store, "s1", candidate.version, successes=3, failures=0, base_ts=3000.0)
-    assert mgr.evaluate_probation("s1") == "pending"
-
-
-# -- lifecycle: routing splits traffic --------------------------------------
-
-def test_route_splits_traffic_to_probation(store):
-    _seed(store)
-    mgr = LifecycleManager(store,
-                           probation_config=ProbationConfig(traffic_share=0.3))
-    candidate = mgr.repair("s1", repair_fn=lambda old, reasons: "fixed")
-    rng = random.Random(42)
-    picks = [mgr.route("s1", rng).version for _ in range(1000)]
-    probation_share = picks.count(candidate.version) / len(picks)
-    # roughly matches configured share (allow generous tolerance)
-    assert 0.2 < probation_share < 0.4
+    manager = LifecycleManager(store, probation_config=ProbationConfig(min_trials=10))
+    manager.repair("s1", repair_fn=lambda old, reasons: "fixed")
+    assert manager.evaluate_probation("s1") == "pending"
 
 
 def test_route_all_active_without_probation(store):

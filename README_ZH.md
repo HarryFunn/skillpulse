@@ -51,75 +51,59 @@ pip install -e ".[dev]"
 ## CLI 快速开始
 
 ```bash
-# 注册 Skill，首个版本会自动激活
-skillguard add scraper \
-  --name "抓取页面标题" \
-  --content-file skill.txt
+# 注册 Skill，v1 自动成为现役版本
+skillguard add scraper --name "抓取页面标题" --content-file skill.txt
 
-# 记录执行结果
-skillguard record scraper --ok
-skillguard record scraper --fail --error "SelectorNotFound"
+# 记录完整 Skill 执行的最终结果
+skillguard run-record scraper --ok --run-id run-001
+skillguard run-record scraper --fail --run-id run-002 \
+  --error "SelectorNotFound" --model claude-sonnet --tag web-scraping
 
-# 查看技能库整体运行状态
 skillguard status
-
-# 检测退化并标记异常版本
 skillguard doctor
-
-# 分析退化原因并获取处理建议
 skillguard attribute scraper
 
-# 创建修复版本，并进入灰度验证阶段
+# repair 只创建 candidate，此时不能承接线上流量
 skillguard repair scraper --content-file fixed_skill.txt
 
-# 根据灰度执行结果决定晋升、拒绝或继续观察
-skillguard evaluate scraper
+# replay-results.json 的格式为 {"历史 run_id": true/false}
+skillguard replay scraper 2 --results replay-results.json
 
-# 查看版本关系和审计记录
-skillguard history scraper
+# 离线回放通过后，candidate 才会进入 probation
+skillguard evaluate scraper      # promoted | rejected | pending
+
+# 输出机器可读的完整报告
+skillguard report --output report.json
 ```
-
-`evaluate` 可能返回：
-
-- `promoted`：修复版本通过验证并晋升为现役版本。
-- `rejected`：修复版本未达到要求，已被拒绝。
-- `pending`：有效试验次数不足，暂不作出决定。
 
 ## 作为 Python 库使用
 
 ```python
-from skillguard import ExecutionRecord, LifecycleManager, SkillStore
+from skillguard import LifecycleManager, SkillRun, SkillStore
 
 store = SkillStore("skills.db")
 manager = LifecycleManager(store)
-
-store.add_skill(
-    "scraper",
-    "抓取页面标题",
-    content="selector = 'head > title'",
-)
+store.add_skill("scraper", "抓取页面标题", content="selector = 'head > title'")
 manager.activate_initial("scraper")
 
-# Agent 调用 Skill 后记录执行结果
-store.record_execution(
-    ExecutionRecord("scraper", version=1, success=True)
-)
+store.record_skill_run(SkillRun(
+    run_id="run-001",
+    skill_id="scraper",
+    version=1,
+    success=True,
+    input_data={"url": "https://example.test"},
+))
 
-# 定期检查现役版本是否出现退化
-flagged = manager.scan()
-
-# 接入人工修复或 LLM 修复逻辑
-if flagged:
-    manager.repair(
-        "scraper",
-        repair_fn=lambda old_content, reasons: fix(old_content, reasons),
+if manager.scan():
+    candidate = manager.repair(
+        "scraper", repair_fn=lambda old, reasons: fix(old, reasons))
+    replay = manager.replay(
+        "scraper", candidate.version,
+        replay_fn=lambda candidate_content, historical_run: replay_in_sandbox(
+            candidate_content, historical_run.input_data),
     )
-
-# 根据配置将少量调用路由到灰度版本
-version = manager.route("scraper")
-
-# 试验次数达到要求后评估灰度版本
-manager.evaluate_probation("scraper")
+    if replay.passed:
+        version = manager.route("scraper")  # candidate 此时才有资格承接灰度流量
 ```
 
 ## 退化检测机制
@@ -184,17 +168,22 @@ skillguard record scraper \
 
 归因阈值通过 `AttributionConfig` 配置。
 
-## 生命周期
+## 两级修复验证
 
 ```text
-candidate ──激活/晋升──► active ──检测到退化──► degraded
-    ▲                       │                         │
-    │                       │ repair()                │ repair()
-    └────── probation ◄─────┴─────────────────────────┘
-               │
-               ├── 验证通过 ──► active（原版本转为 retired）
-               └── 验证失败 ──► rejected（现役版本保持不变）
+active ──检测到退化──► degraded ──repair──► candidate
+                                             │
+                                       离线历史回放
+                                       ├── 未通过 ──► candidate
+                                       └── 通过 ──► probation
+                                                      │
+                                                线上灰度验证
+                                                ├── 通过 ──► active（旧版本 retired）
+                                                └── 未通过 ──► rejected
 ```
+
+离线回放同时计算两个指标：历史失败样本的 `fix_rate`，以及历史成功样本的
+`regression_rate`。只有两项均达到阈值，candidate 才能进入 probation 并承接线上灰度流量。
 
 各状态含义：
 
@@ -215,43 +204,35 @@ python -m demo.simulate
 
 1. 页面标题抓取 Skill 在初始阶段保持正常。
 2. 目标网站调整 HTML 结构，旧选择器开始持续失败。
-3. SkillGuard 检测到成功率显著下降。
-4. 归因模块将问题识别为环境变化。
-5. 修复版本进入灰度验证阶段。
-6. 修复版本达到成功率要求后晋升，旧版本转为退役状态。
-7. 输出完整的生命周期审计记录。
+3. SkillGuard 检测到成功率显著下降并归因为环境变化。
+4. 修复版本以 candidate 状态创建，暂不承接线上流量。
+5. 回放历史成功/失败样本，验证修复率和回归率。
+6. 回放通过后进入 probation，并接受线上灰度验证。
+7. 达到成功率要求后晋升，旧版本转为退役状态。
+8. 输出完整的生命周期审计记录。
 
-## 导入真实会话记录
+## ToolCall 与 SkillRun
 
-SkillGuard 可以从本地 Agent 会话日志中提取工具调用及其执行结果，无需手工逐条录入。
+SkillGuard 明确区分两层执行数据：
+
+- `ToolCall`：Agent 会话中的单次工具调用。
+- `SkillRun`：一次完整 Skill 执行的最终结果，其中可以包含多个 ToolCall。
+
+Claude Code 和 Codex 的本地日志主要暴露工具调用，因此 `ingest` 只导入 ToolCall。
+它不会把一次工具调用成功等同于整个 Skill 成功，也不会把工具名自动注册为 Skill。
 
 ```bash
-# 导入 Claude Code 会话记录
 skillguard ingest ~/.claude/projects --format claude
-
-# 导入 Codex rollout 记录
 skillguard ingest ~/.codex/sessions --format codex
-
-# 分析导入后的真实执行数据
-skillguard status
-skillguard doctor
-skillguard attribute <skill_id>
 ```
 
-### 结果判定规则
+导入过程支持幂等执行。SkillGuard 根据会话文件路径和原始 call ID 生成稳定标识，
+重复导入同一日志不会产生重复数据。CLI 会分别报告 `added`、`duplicates`、
+`skipped` 和 `files`。没有匹配结果的调用会作为不完整记录跳过。
 
-- Claude Code：`tool_result` 中 `is_error: true` 的调用记为失败。
-- Codex：工具输出中的 `exit_code` 非零或包含 `error` 字段时记为失败。
-- 没有对应结果的调用视为不完整记录，不会写入数据库。
-- 会话中的模型信息和工作目录会分别写入 `model` 与 `task_tag`，供归因模块使用。
-
-默认情况下，导入器会自动注册未出现过的工具名称。使用 `--no-register` 可以跳过尚未注册的工具：
-
-```bash
-skillguard ingest ~/.claude/projects \
-  --format claude \
-  --no-register
-```
+完整 Skill 的最终结果应通过 `run-record` 或 Python API `record_skill_run()` 单独记录。
+通过可重复使用的 `--tool-call-id <稳定标识>` 参数，可以把已导入的 ToolCall 关联到该
+SkillRun。退化检测、原因归因、离线回放和 probation 评估均使用 SkillRun，而不是原始工具调用结果。
 
 ## 运行测试
 
@@ -264,9 +245,12 @@ pytest
 - Skill 和版本的创建、激活与存储。
 - z 检验、EWMA 与长期未验证检测。
 - 退化标记与审计记录。
+- ToolCall 与 SkillRun 的分层存储及幂等写入。
+- 离线回放的修复率、回归率和 probation 准入门。
 - 修复版本的灰度路由、晋升和拒绝。
 - 环境变化、模型切换、任务分布变化和 Skill 缺陷归因。
-- Claude Code 与 Codex 会话日志解析和导入。
+- Claude Code 与 Codex 日志解析、重复导入和统计结果。
+- JSON 报告 schema 与旧数据库自动迁移。
 
 ## 许可证
 

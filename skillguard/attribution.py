@@ -71,7 +71,9 @@ class Attributor:
 
     def attribute(self, skill_id: str, version: int) -> AttributionReport:
         cfg = self.config
-        runs = self.store.get_executions(skill_id, version)
+        runs = self.store.get_skill_runs(skill_id, version)
+        if not runs:
+            runs = self.store.get_executions(skill_id, version)
         recent = runs[-cfg.recent_window:]
         baseline = runs[:-cfg.recent_window]
         failing = [r for r in recent if not r.success]

@@ -1,16 +1,4 @@
-"""End-to-end demo: a skill that silently breaks when its environment changes.
-
-Story:
-    A "web-scrape-title" skill works fine for a while. Then the target site
-    changes its HTML, and the skill starts failing every call. SkillGuard:
-      1. detects the degradation from the execution stream (not from any
-         version number or git diff),
-      2. flags the active version DEGRADED,
-      3. accepts a repaired version into a canary probation trial,
-      4. promotes the repaired version once it proves itself, retiring the old.
-
-Run:  python -m demo.simulate   (from the repo root)
-"""
+"""End-to-end v0.2 demo: detect, attribute, replay, canary, promote."""
 
 from __future__ import annotations
 
@@ -19,7 +7,13 @@ import tempfile
 import time
 from pathlib import Path
 
-from skillguard import Attributor, ExecutionRecord, LifecycleManager, SkillStore
+from skillguard import (
+    Attributor,
+    LifecycleManager,
+    ReplayConfig,
+    SkillRun,
+    SkillStore,
+)
 from skillguard.lifecycle import ProbationConfig
 
 SKILL = "web-scrape-title"
@@ -31,78 +25,91 @@ def line(title: str) -> None:
 
 def run() -> None:
     rng = random.Random(7)
-    db = Path(tempfile.mkdtemp()) / "demo.db"
-    store = SkillStore(db)
-    mgr = LifecycleManager(
+    store = SkillStore(Path(tempfile.mkdtemp()) / "demo.db")
+    manager = LifecycleManager(
         store,
+        replay_config=ReplayConfig(min_cases=10, min_failed_cases=5,
+                                   min_fix_rate=0.8, max_regression_rate=0.1),
         probation_config=ProbationConfig(traffic_share=0.3, min_trials=15,
                                          promote_threshold=0.8),
     )
 
-    line("1. register skill and warm it up (healthy)")
-    store.add_skill(SKILL, "Scrape page <title>", content="css_selector = 'head > title'")
-    mgr.activate_initial(SKILL)
-    # start ~130 minutes ago so the final execution lands near "now"
+    line("1. register skill and collect final SkillRun outcomes")
+    store.add_skill(SKILL, "Scrape page <title>",
+                    content="css_selector = 'head > title'")
+    manager.activate_initial(SKILL)
     ts = time.time() - 130 * 60
-    for _ in range(40):                       # baseline: reliably succeeds
-        store.record_execution(ExecutionRecord(SKILL, 1, True, ts=ts,
-                                               task_tag="scrape", model="gpt-x"))
+    for index in range(40):
+        _record_run(store, f"healthy-{index}", 1, True, ts)
         ts += 60
-    _print_status(mgr)
+    _print_status(manager)
 
-    line("2. the target site changes its HTML -> skill silently breaks")
-    for _ in range(25):                       # environment drift: now failing
-        store.record_execution(ExecutionRecord(
-            SKILL, 1, False, ts=ts, error="SelectorNotFound: head > title",
-            task_tag="scrape", model="gpt-x"))
+    line("2. environment changes; complete Skill executions start failing")
+    for index in range(25):
+        _record_run(store, f"failed-{index}", 1, False, ts,
+                    error="SelectorNotFound: head > title")
         ts += 60
-    _print_status(mgr)
+    _print_status(manager)
 
-    line("3. doctor scan detects degradation")
-    report = mgr.checker.check(SKILL, 1)
-    print("diagnosis:", "; ".join(report.reasons))
-    flagged = mgr.scan()
-    print("flagged as DEGRADED:", flagged)
+    line("3. detect and attribute degradation")
+    print("flagged:", manager.scan())
+    attribution = Attributor(store).attribute(SKILL, 1)
+    print(f"root cause: {attribution.cause.value} (score {attribution.confidence:.2f})")
+    print("action    :", attribution.recommended_action)
 
-    line("4. attribute the root cause -> pick the right action")
-    attr = Attributor(store).attribute(SKILL, 1)
-    print(f"root cause: {attr.cause.value} (confidence {attr.confidence:.0%})")
-    print(f"action    : {attr.recommended_action}")
-    for e in attr.evidence:
-        print(f"  - {e}")
+    line("4. create candidate; it cannot receive traffic yet")
+    candidate = manager.repair(
+        SKILL,
+        lambda old, _reasons: old.replace(
+            "head > title", "meta[property='og:title']"),
+        note="repair selector after site change",
+    )
+    print(f"created {candidate.key} [{candidate.state.value}]")
+    print("routed before replay:", manager.route(SKILL, rng).key)
 
-    line("5. repair -> new version enters canary probation")
-    def repair_fn(old: str, reasons: list[str]) -> str:
-        # a real system would call an LLM here; we simulate the fix
-        return old.replace("head > title", "meta[property='og:title']")
-    candidate = mgr.repair(SKILL, repair_fn, note="auto-repair after selector break")
-    print(f"created {candidate.key} (PROBATION); content -> {candidate.content!r}")
+    line("5. replay historical success and failure cases offline")
+    replay = manager.replay(
+        SKILL, candidate.version,
+        # The candidate preserves historical successes and fixes failures.
+        lambda _content, _historical_run: True,
+    )
+    print(f"passed={replay.passed} fix_rate={replay.fix_rate:.0%} "
+          f"regression_rate={replay.regression_rate:.0%}")
+    print("candidate state:", store.get_version(SKILL, candidate.version).state.value)
 
-    line("6. serve traffic; repaired version works, old one still broken")
-    for _ in range(60):
-        served = mgr.route(SKILL, rng)
-        # v1 still broken, the repaired v2 succeeds
+    line("6. canary serves live SkillRuns, then promotes")
+    candidate_runs = 0
+    while candidate_runs < 15:
+        served = manager.route(SKILL, rng)
         ok = served.version == candidate.version
-        err = "" if ok else "SelectorNotFound: head > title"
-        store.record_execution(ExecutionRecord(SKILL, served.version, ok, ts=ts,
-                                               error=err, task_tag="scrape", model="gpt-x"))
+        _record_run(store, f"live-{ts}", served.version, ok, ts,
+                    error="SelectorNotFound" if not ok else "")
+        if served.version == candidate.version:
+            candidate_runs += 1
         ts += 60
-    decision = mgr.evaluate_probation(SKILL)
-    print("probation decision:", decision)
-    _print_status(mgr)
+    print("probation decision:", manager.evaluate_probation(SKILL))
+    _print_status(manager)
 
     line("7. audit trail")
-    for e in store.get_events(SKILL):
-        print(f"  {e['kind']}: {e['payload']}")
-
+    for event in store.get_events(SKILL):
+        print(f"  {event['kind']}: {event['payload']}")
     store.close()
 
 
-def _print_status(mgr: LifecycleManager) -> None:
-    for r in mgr.checker.check_all_active():
-        rate = f"{r.recent_rate:.0%}" if r.recent_rate is not None else "-"
-        print(f"  {r.skill_id}@{r.version}: status={r.status} recent={rate} "
-              f"runs={r.n_total}")
+def _record_run(store: SkillStore, run_id: str, version: int, success: bool,
+                ts: float, error: str = "") -> None:
+    store.record_skill_run(SkillRun(
+        run_id=run_id, skill_id=SKILL, version=version, success=success, ts=ts,
+        error=error, task_tag="scrape", model="gpt-x",
+        input_data={"url": "https://example.test"},
+    ))
+
+
+def _print_status(manager: LifecycleManager) -> None:
+    for report in manager.checker.check_all_active():
+        rate = f"{report.recent_rate:.0%}" if report.recent_rate is not None else "-"
+        print(f"  {report.skill_id}@{report.version}: status={report.status} "
+              f"recent={rate} runs={report.n_total}")
 
 
 if __name__ == "__main__":
