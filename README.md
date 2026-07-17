@@ -1,21 +1,29 @@
-# SkillGuard
+<p align="center">
+  <img src="images/skillguard-banner.png" alt="SkillGuard" width="760" />
+</p>
 
-[![CI](https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml/badge.svg)](https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml)
+<h3 align="center">Runtime health monitoring and safe lifecycle management for Agent Skills</h3>
 
-**English** | [中文](README_ZH.md)
+<p align="center">
+  Detect degradation from real executions, attribute the root cause, and validate repairs before promotion.
+</p>
 
-Version management and degradation detection for agent skill libraries.
+<p align="center">
+  <a href="https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml"><img src="https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-059669.svg" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/runtime_dependencies-0-2F3337.svg" alt="Zero runtime dependencies" />
+</p>
 
-Agent skill libraries **rot**. A skill that works today silently breaks when an
-API changes, a web page is redesigned, or the underlying model is swapped. Most
-tooling detects staleness from *proxy signals* — upstream version numbers, git
-commits, file hashes — and never looks at whether the skill still *works*.
+<p align="center">
+  <strong>English</strong> | <a href="README_ZH.md">简体中文</a>
+</p>
 
-SkillGuard watches the **execution stream** instead: it scores each skill
-version's real success rate over time, flags statistically significant
-degradation, and manages a safe **repair → canary → promote/rollback** loop so a
-broken skill is never silently overwritten and a bad fix never reaches full
-traffic.
+---
+
+SkillGuard evaluates each Agent Skill version from its real execution history. It detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → repair → canary → promote/rollback** workflow.
+
+Unlike tools that rely only on upstream versions, Git commits, or file hashes, SkillGuard measures whether a Skill still works in practice.
 
 ## Why it's different
 

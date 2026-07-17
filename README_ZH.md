@@ -1,14 +1,29 @@
-# SkillGuard
+<p align="center">
+  <img src="images/skillguard-banner.png" alt="SkillGuard" width="760" />
+</p>
 
-[![CI](https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml/badge.svg)](https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml)
+<h3 align="center">面向 Agent Skill 的运行监测与安全生命周期管理</h3>
 
-[English](README.md) | **中文**
+<p align="center">
+  基于真实执行结果检测退化、分析原因，并在修复版本晋升前完成灰度验证。
+</p>
 
-面向 Agent Skill 的版本管理、运行监测与退化诊断工具。
+<p align="center">
+  <a href="https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml"><img src="https://github.com/HarryFunn/skillguard/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-059669.svg" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/runtime_dependencies-0-2F3337.svg" alt="零运行时依赖" />
+</p>
 
-Skill 在发布时能够正常运行，并不意味着它会一直可靠。API 升级、网页结构调整、底层模型切换或任务分布变化，都可能导致原本有效的 Skill 成功率下降。此类问题通常不会体现为明确的版本冲突，而是以偶发失败、调用结果异常或整体成功率持续降低的形式出现。
+<p align="center">
+  <a href="README.md">English</a> | <strong>简体中文</strong>
+</p>
 
-SkillGuard 根据真实执行记录持续评估每个 Skill 版本的运行表现，通过统计方法识别显著退化，并提供一套完整的 **检测、归因、修复、灰度验证、晋升或回滚** 流程。修复版本在验证通过前不会直接替换现役版本，从而降低错误修复带来的影响。
+---
+
+SkillGuard 根据真实执行记录持续评估每个 Agent Skill 版本的运行表现，通过统计方法识别显著退化，区分环境变化、模型切换、任务分布变化和 Skill 自身缺陷，并管理一套完整的 **检测 → 归因 → 修复 → 灰度验证 → 晋升/回滚** 流程。
+
+与仅依赖上游版本、Git 提交或文件哈希的工具不同，SkillGuard 关注的是 Skill 在实际运行中是否仍然有效。
 
 ## 核心能力
 
