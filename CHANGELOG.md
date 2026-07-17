@@ -4,6 +4,9 @@
 
 - Rename the project from SkillGuard to SkillPulse to avoid conflicts with an
   existing Agent Skills permission framework and unrelated commercial products.
+- Clarify that candidate content is authored externally by a human, LLM, or
+  deterministic rule; the CLI now requires `repair --content-file` and no
+  longer creates placeholder repair content.
 - Make Claude Code and Codex session ingestion idempotent with stable ToolCall IDs.
 - Report added, duplicate, skipped, and processed-file counts during ingestion.
 - Separate ToolCall observations from final SkillRun outcomes.

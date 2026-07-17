@@ -5,7 +5,7 @@
 <h3 align="center">Runtime health monitoring and safe lifecycle management for Agent Skills</h3>
 
 <p align="center">
-  Detect degradation from real executions, attribute the root cause, and validate repairs before promotion.
+  Detect degradation from real executions, attribute the root cause, and validate externally-authored candidates before promotion.
 </p>
 
 <p align="center">
@@ -21,7 +21,7 @@
 
 ---
 
-SkillPulse evaluates each Agent Skill version from its real execution history. It detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → repair → canary → promote/rollback** workflow.
+SkillPulse evaluates each Agent Skill version from its real execution history. It detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → submit candidate → offline replay → canary → promote/rollback** workflow. Candidate content is authored externally by a human, LLM, or deterministic repair rule; SkillPulse validates and manages it rather than generating it.
 
 Unlike tools that rely only on upstream versions, Git commits, or file hashes, SkillPulse measures whether a Skill still works in practice.
 
@@ -34,12 +34,11 @@ Unlike tools that rely only on upstream versions, Git commits, or file hashes, S
   know *what to do*. SkillPulse attributes each degradation to one of four
   causes — environment drift, model change, task drift, or an intrinsic skill
   defect — and maps each to a different recommended action.
-- **Repair is gated, not blind.** A repaired version enters a canary probation
-  trial (a configurable share of traffic) and is only promoted after it clears a
-  success bar over a minimum number of trials — otherwise it's rolled back and
-  the incumbent keeps serving.
+- **External candidates are gated.** A human, LLM, or rule authors the candidate;
+  SkillPulse first replays history, then admits passing candidates to a canary
+  trial. Failed candidates never replace the incumbent.
 - **Full audit trail.** Every state change is logged, so you can explain why any
-  version was flagged, repaired, promoted, or retired.
+  version was flagged, submitted, promoted, or retired.
 - **Zero dependencies.** Pure standard library + SQLite. Works as a library or a
   CLI.
 
@@ -64,8 +63,8 @@ skillpulse status
 skillpulse doctor
 skillpulse attribute scraper
 
-# repair creates a CANDIDATE; it cannot receive traffic yet
-skillpulse repair scraper --content-file fixed_skill.txt
+# submit a candidate authored by a human, LLM, or deterministic rule
+skillpulse repair scraper --content-file externally-authored-skill.txt
 
 # replay-results.json maps historical run_id -> candidate outcome
 skillpulse replay scraper 2 --results replay-results.json
@@ -96,8 +95,11 @@ store.record_skill_run(SkillRun(
 ))
 
 if manager.scan():
+    # The provider authors the candidate; SkillPulse only manages validation.
     candidate = manager.repair(
-        "scraper", repair_fn=lambda old, reasons: fix(old, reasons))
+        "scraper",
+        repair_fn=lambda old, reasons: external_repair_provider(old, reasons),
+    )
     replay = manager.replay(
         "scraper", candidate.version,
         replay_fn=lambda candidate_content, historical_run: replay_in_sandbox(
@@ -141,10 +143,18 @@ Attribution needs the optional `model` and `task_tag` fields on execution
 records (`skillpulse record ... --model <m> --tag <t>`). Thresholds live in
 `AttributionConfig`.
 
-## Two-level repair gate
+## Who authors a candidate?
+
+SkillPulse does not generate Skill content. The `repair_fn` extension point may
+call a human workflow, an LLM, or deterministic repair rules. The CLI requires
+an explicit `--content-file` and never creates a placeholder candidate.
+SkillPulse takes responsibility after submission: persistence, offline replay,
+live canary evaluation, promotion, and rejection.
+
+## Two-level candidate gate
 
 ```
-active ──degradation──► degraded ──repair──► candidate
+active ──degradation──► degraded ──external submission──► candidate
                                                 │
                                    offline replay gate
                                    ├── fail ──► candidate
@@ -166,8 +176,9 @@ python -m demo.simulate
 ```
 
 Simulates a scraper skill that breaks when the target site changes its HTML:
-SkillPulse detects the drop, flags it, accepts a repaired version into a canary
-trial, and promotes it once proven — printing the full audit trail.
+SkillPulse detects and attributes the drop, accepts an externally-authored
+candidate, gates it through offline replay and live canary evaluation, and
+promotes it once proven — printing the full audit trail.
 
 ## ToolCall vs SkillRun
 

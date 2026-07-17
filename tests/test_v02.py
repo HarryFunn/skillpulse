@@ -153,6 +153,23 @@ def test_doctor_json_replaces_infinity_with_null(store, capsys):
     assert payload["reports"][0]["staleness_days"] is None
 
 
+def test_repair_cli_requires_external_content_file(store):
+    with pytest.raises(SystemExit) as exc:
+        main(["--db", store.db_path, "repair", "s1"])
+    assert exc.value.code == 2
+
+
+def test_repair_cli_submits_exact_external_content(store, tmp_path, capsys):
+    candidate_file = tmp_path / "candidate.md"
+    candidate_file.write_text("externally authored candidate", encoding="utf-8")
+    main(["--db", store.db_path, "repair", "s1",
+          "--content-file", str(candidate_file)])
+    assert "CANDIDATE" in capsys.readouterr().out
+    candidate = store.get_version("s1", 2)
+    assert candidate.content == "externally authored candidate"
+    assert "candidate submitted from" in candidate.repair_note
+
+
 def test_existing_v01_database_migrates_without_rebuild(tmp_path):
     path = tmp_path / "old.db"
     conn = sqlite3.connect(path)

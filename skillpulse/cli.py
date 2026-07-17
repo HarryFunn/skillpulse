@@ -169,13 +169,9 @@ def cmd_attribute(args: argparse.Namespace) -> None:
 def cmd_repair(args: argparse.Namespace) -> None:
     store = SkillStore(args.db)
     manager = LifecycleManager(store)
-    if args.content_file:
-        new_content = Path(args.content_file).read_text()
-        repair_fn = lambda _old, _reasons: new_content
-        note = f"manual repair from {args.content_file}"
-    else:
-        repair_fn = lambda old, reasons: old + f"\n# repair needed: {reasons}"
-        note = "stub repair"
+    new_content = Path(args.content_file).read_text()
+    repair_fn = lambda _old, _reasons: new_content
+    note = f"candidate submitted from {args.content_file}"
     candidate = manager.repair(args.skill_id, repair_fn, note=note)
     print(f"created {candidate.key} in CANDIDATE state")
     print(f"next: `skillpulse replay {args.skill_id} {candidate.version} "
@@ -317,9 +313,11 @@ def build_parser() -> argparse.ArgumentParser:
     _out_format(command)
     command.set_defaults(func=cmd_attribute)
 
-    command = sub.add_parser("repair")
+    command = sub.add_parser(
+        "repair", help="submit an externally-authored candidate version")
     command.add_argument("skill_id")
-    command.add_argument("--content-file")
+    command.add_argument("--content-file", required=True,
+                         help="candidate content written by a human, LLM, or rule")
     command.set_defaults(func=cmd_repair)
 
     command = sub.add_parser("replay", help="offline replay gate before probation")

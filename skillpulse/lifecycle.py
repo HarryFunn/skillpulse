@@ -92,14 +92,16 @@ class LifecycleManager:
                 flagged.append(report.skill_id)
         return flagged
 
-    # -- repair sub-flow ---------------------------------------------------------
+    # -- candidate submission --------------------------------------------------
 
     def repair(self, skill_id: str, repair_fn: RepairFn,
-               note: str = "auto-repair") -> SkillVersion:
-        """Create a repaired CANDIDATE version.
+               note: str = "externally-authored candidate") -> SkillVersion:
+        """Submit a CANDIDATE produced by an external repair provider.
 
-        The candidate cannot receive traffic until `replay()` passes and moves
-        it into PROBATION.
+        `repair_fn` may call a human workflow, an LLM, or deterministic rules.
+        SkillPulse stores and validates the returned content; it does not author
+        the repair itself. The candidate cannot receive traffic until `replay()`
+        passes and moves it into PROBATION.
         """
         skill = self.store.get_skill(skill_id)
         if skill is None:

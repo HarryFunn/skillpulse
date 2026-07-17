@@ -57,12 +57,13 @@ def run() -> None:
     print(f"root cause: {attribution.cause.value} (score {attribution.confidence:.2f})")
     print("action    :", attribution.recommended_action)
 
-    line("4. create candidate; it cannot receive traffic yet")
+    line("4. external rule authors a candidate; SkillPulse stores it")
+    external_rule = lambda old, _reasons: old.replace(
+        "head > title", "meta[property='og:title']")
     candidate = manager.repair(
         SKILL,
-        lambda old, _reasons: old.replace(
-            "head > title", "meta[property='og:title']"),
-        note="repair selector after site change",
+        external_rule,
+        note="candidate authored by an external selector rule",
     )
     print(f"created {candidate.key} [{candidate.state.value}]")
     print("routed before replay:", manager.route(SKILL, rng).key)
