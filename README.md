@@ -21,7 +21,7 @@
 
 ---
 
-SkillPulse evaluates each Agent Skill version from its real execution history. It detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → submit candidate → offline replay → canary → promote/rollback** workflow.
+SkillPulse evaluates each Agent Skill version from its real execution history. Outcomes can be recorded directly or synchronized from Langfuse and Phoenix. SkillPulse detects statistically significant degradation, distinguishes environment drift from model changes, task drift, and intrinsic defects, then manages a gated **detect → attribute → submit candidate → offline replay → canary → promote/rollback** workflow.
 
 Unlike tools that rely only on upstream versions, Git commits, or file hashes, SkillPulse measures whether a Skill still works in practice.
 
@@ -39,6 +39,9 @@ Unlike tools that rely only on upstream versions, Git commits, or file hashes, S
   the incumbent.
 - **Full audit trail.** Every state change is logged, so you can explain why any
   version was flagged, submitted, promoted, or retired.
+- **Bring your existing observability data.** Langfuse traces/scores and Phoenix
+  root spans/annotations become idempotent `SkillRun` records instead of another
+  disconnected telemetry silo.
 - **Zero dependencies.** Pure standard library + SQLite. Works as a library or a
   CLI.
 
@@ -74,6 +77,113 @@ skillpulse evaluate scraper      # -> promoted | rejected | pending
 
 # export a machine-readable report
 skillpulse report --output report.json
+```
+
+## Pull outcomes from Langfuse or Phoenix
+
+The integration layer reads the final/root operation of each trace, joins its
+trace-level and root-operation evaluation evidence, maps it to a registered
+Skill version, and stores one idempotent `SkillRun`. Child spans remain in the
+observability platform: a
+successful child operation is not automatically treated as a successful Skill.
+
+<p align="center">
+  <img src="images/observability-sync.png" alt="Langfuse and Phoenix synchronization demo" width="920" />
+</p>
+
+The screenshot comes from `python -m demo.integrations`, an offline contract
+demo that exercises the real HTTP clients, mapping, CLI, and SQLite store against
+local API fixtures. It requires no provider account and sends no external data.
+
+Register the Skill first, then choose either a CLI fallback mapping or namespaced
+metadata on each root trace.
+
+### Langfuse
+
+SkillPulse uses the current
+[Observations API v2](https://langfuse.com/docs/api-and-data-platform/features/observations-api)
+and [Scores API v3](https://langfuse.com/changelog/2026-06-10-scores-v3-api).
+Set project API credentials with environment variables; secrets are never CLI
+arguments.
+
+```bash
+export LANGFUSE_PUBLIC_KEY=pk-lf-...
+export LANGFUSE_SECRET_KEY=sk-lf-...
+# Optional for self-hosted or another cloud region:
+export LANGFUSE_BASE_URL=https://cloud.langfuse.com
+
+skillpulse --db skills.db sync langfuse \
+  --skill-id support-answer \
+  --success-score correctness \
+  --success-threshold 0.8 \
+  --since 24h
+```
+
+### Phoenix
+
+SkillPulse uses Phoenix's current project
+[root-span](https://arize.com/docs/phoenix/sdk-api-reference/rest-api/api-reference/spans/list-spans-with-simple-filters-no-dsl)
+plus [trace](https://arize.com/docs/phoenix/sdk-api-reference/rest-api/api-reference/annotations/get-trace-annotations-for-a-list-of-trace_ids)
+and [root-span annotations](https://arize.com/docs/phoenix/sdk-api-reference/rest-api/api-reference/annotations/get-span-annotations-for-a-list-of-span_ids)
+REST APIs. A bearer token is optional when authentication is disabled on a
+self-hosted instance.
+
+```bash
+export PHOENIX_BASE_URL=http://localhost:6006
+export PHOENIX_API_KEY=...
+
+skillpulse --db skills.db sync phoenix \
+  --project support-production \
+  --skill-id support-answer \
+  --success-score correctness \
+  --success-threshold 0.8 \
+  --since 24h
+```
+
+### Mapping rules
+
+CLI options are useful when one provider project represents one Skill. For
+multi-Skill projects, omit `--skill-id`/`--version` and add the namespaced fields
+to the Langfuse root observation metadata or Phoenix root span attributes.
+
+| SkillRun field | Resolution order |
+| --- | --- |
+| `skill_id` | `--skill-id`, then `skillpulse.skill_id` (required; unknown Skills are skipped) |
+| `version` | `--version`, `skillpulse.version`, then the registered active version |
+| `success` | named `--success-score`, `skillpulse.success`, then provider root error status |
+| `task_tag` | `skillpulse.task_tag`, then the trace/root-span name |
+| `model`, input, output, session | normalized from provider root fields/attributes |
+
+A configured `--success-score` is strict: a trace without that score is skipped
+instead of silently falling back to span status. Boolean/categorical scores use
+pass/fail labels; numeric scores use `--success-threshold`. Imported metadata and
+all fetched evaluation evidence are preserved on the `SkillRun` for auditing.
+When the same evaluation name exists at both levels, the most recently updated
+value wins.
+
+Synchronization is cursor-paginated and checkpointed in the same SQLite file.
+The checkpoint advances only after a complete polling window succeeds. Later
+runs overlap the saved watermark by 10 minutes, then rely on stable provider IDs
+for deduplication; this catches delayed telemetry without creating duplicate
+runs. The first run defaults to a 24-hour lookback. Use `--since 7d`, an ISO-8601
+timestamp, or epoch seconds to override it; use `--no-checkpoint` for a one-off
+read.
+
+The provider-neutral Python API is available under `skillpulse.integrations`:
+
+```python
+from skillpulse.integrations import (
+    LangfuseSource, MappingConfig, RunMapper, RunSynchronizer,
+)
+
+result = RunSynchronizer(
+    store,
+    RunMapper(MappingConfig(
+        skill_id="support-answer",
+        success_score="correctness",
+        success_threshold=0.8,
+    )),
+).sync(LangfuseSource(), since=None)
 ```
 
 ## Quick start (library)
@@ -197,6 +307,11 @@ Record the final Skill outcome separately with `run-record` or the Python
 `record_skill_run()` API. Imported calls can be attached with repeatable
 `--tool-call-id <stable-id>` arguments. Health detection, attribution, replay,
 and probation then use SkillRun outcomes rather than raw tool-call success.
+
+The Langfuse and Phoenix adapters follow the same boundary. They create one
+`SkillRun` from a trace root and its final evaluation evidence; they do not
+promote arbitrary child span names to Skills or convert child status into the
+final outcome.
 
 ## Run the tests
 

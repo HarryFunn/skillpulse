@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+- Add a provider-neutral observability integration layer with explicit
+  `SourceRun` to `SkillRun` mapping.
+- Add Langfuse v4 ingestion through Observations API v2 and Scores API v3.
+- Add Phoenix ingestion through project root spans plus trace/root-span annotations.
+- Add `skillpulse sync langfuse` and `skillpulse sync phoenix` commands with
+  environment-based authentication and evaluation-driven success rules.
+- Make remote synchronization idempotent and resumable with SQLite checkpoints,
+  bounded polling windows, cursor safety checks, and a delayed-trace overlap.
+- Preserve provider metadata and evaluation evidence on imported `SkillRun`
+  records, including additive migrations for existing databases.
+- Add isolated adapter, mapping, checkpoint, retry, and real-HTTP CLI tests.
+
 ## 0.2.0
 
 - Rename the project from SkillGuard to SkillPulse to avoid conflicts with an

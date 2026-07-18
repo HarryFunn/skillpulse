@@ -105,6 +105,8 @@ class SkillRun:
     model: str = ""
     source: str = "manual"
     session_id: str = ""
+    metadata: dict = field(default_factory=dict)
+    evaluations: dict = field(default_factory=dict)
 
 
 @dataclass

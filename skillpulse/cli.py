@@ -13,6 +13,15 @@ from pathlib import Path
 from .attribution import Attributor
 from .health import HealthChecker
 from .ingest import SessionIngestor
+from .integrations import (
+    IntegrationError,
+    LangfuseSource,
+    MappingConfig,
+    PhoenixSource,
+    RunMapper,
+    RunSynchronizer,
+    parse_since,
+)
 from .lifecycle import LifecycleManager
 from .models import ExecutionRecord, SkillRun
 from .reporting import JsonReporter
@@ -232,6 +241,44 @@ def cmd_ingest(args: argparse.Namespace) -> None:
         print("imported records are ToolCalls; create SkillRuns with `run-record`")
 
 
+def cmd_sync(args: argparse.Namespace) -> None:
+    store = SkillStore(args.db)
+    try:
+        since = parse_since(args.since) if args.since else None
+        mapper = RunMapper(MappingConfig(
+            skill_id=args.skill_id,
+            version=args.version,
+            success_score=args.success_score,
+            success_threshold=args.success_threshold,
+        ))
+        if args.provider == "langfuse":
+            source = LangfuseSource(base_url=args.base_url,
+                                    page_size=args.page_size)
+        else:
+            source = PhoenixSource(project=args.project,
+                                   base_url=args.base_url,
+                                   page_size=args.page_size)
+        result = RunSynchronizer(
+            store, mapper, overlap_seconds=args.overlap_seconds).sync(
+                source, since=since, use_checkpoint=not args.no_checkpoint)
+    except (IntegrationError, ValueError) as exc:
+        store.close()
+        sys.exit(f"{args.provider} sync failed: {exc}")
+    store.close()
+
+    payload = result.to_dict()
+    if args.format == "json":
+        _json(payload)
+        return
+    print(f"{args.provider} sync complete")
+    print(f"  window      : {payload['since']} -> {payload['checkpoint'] or 'not saved'}")
+    print(f"  source      : pages={result.pages} scanned={result.scanned}")
+    print(f"  SkillRuns   : added={result.added} duplicates={result.duplicates} "
+          f"skipped={result.skipped}")
+    for reason, count in sorted(result.skip_reasons.items()):
+        print(f"  skipped ({count}): {reason}")
+
+
 def cmd_history(args: argparse.Namespace) -> None:
     store = SkillStore(args.db)
     skill = store.get_skill(args.skill_id)
@@ -259,6 +306,25 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 def _out_format(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=["text", "json"], default="text")
+
+
+def _sync_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--base-url", help="provider base URL; environment default otherwise")
+    parser.add_argument("--page-size", type=int, default=100)
+    parser.add_argument("--since",
+                        help="ISO-8601/epoch start, or lookback such as 24h or 7d")
+    parser.add_argument("--skill-id",
+                        help="map all fetched traces to this registered Skill")
+    parser.add_argument("--version", type=int,
+                        help="map to this version (defaults to trace metadata or active)")
+    parser.add_argument("--success-score",
+                        help="evaluation/annotation name that determines success")
+    parser.add_argument("--success-threshold", type=float, default=0.5)
+    parser.add_argument("--overlap-seconds", type=float, default=600.0,
+                        help="checkpoint overlap used to catch delayed traces")
+    parser.add_argument("--no-checkpoint", action="store_true",
+                        help="ignore and do not update the saved high-water mark")
+    _out_format(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -348,6 +414,22 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--pattern", default="*.jsonl")
     command.add_argument("--format-output", choices=["text", "json"], default="text")
     command.set_defaults(func=cmd_ingest)
+
+    command = sub.add_parser(
+        "sync", help="pull complete SkillRuns from an observability provider")
+    providers = command.add_subparsers(dest="provider", required=True)
+
+    provider = providers.add_parser(
+        "langfuse", help="sync Langfuse root observations and scores")
+    _sync_options(provider)
+    provider.set_defaults(func=cmd_sync)
+
+    provider = providers.add_parser(
+        "phoenix", help="sync Phoenix root spans and trace annotations")
+    provider.add_argument("--project",
+                          help="Phoenix project name/id (or PHOENIX_PROJECT)")
+    _sync_options(provider)
+    provider.set_defaults(func=cmd_sync)
 
     command = sub.add_parser("report", help="emit the complete JSON report")
     command.add_argument("--output")
