@@ -25,6 +25,10 @@ SkillPulse evaluates each Agent Skill version from its real execution history. O
 
 Unlike tools that rely only on upstream versions, Git commits, or file hashes, SkillPulse measures whether a Skill still works in practice.
 
+SkillPulse itself currently ships as a Python library and CLI. It does not bundle
+a web frontend; the screenshots in this repository show terminal output. Langfuse
+and Phoenix keep their own web interfaces for inspecting the source traces.
+
 ## Why it's different
 
 - **Degradation from outcomes, not metadata.** A two-proportion z-test compares
@@ -139,6 +143,116 @@ skillpulse --db skills.db sync phoenix \
   --success-threshold 0.8 \
   --since 24h
 ```
+
+### Real-provider test with Docker Desktop
+
+The normal test suite is offline. The opt-in test below deploys real services,
+creates a synthetic root trace and `correctness` evaluation in each provider,
+syncs both through the production adapters into temporary SQLite databases, and
+then syncs again to assert idempotency.
+
+The verified baseline is Langfuse `3.222.0` (official source commit
+`d70f258e8230b20c548bb74a3b272c1f30cc097f`) and Phoenix `19.2.0`
+(`arizephoenix/phoenix@sha256:e90f05fc04d7507a948128ddd701d89ad1816a1b6fcccfb9feebd0f77d5e86a3`).
+Docker Desktop runs these Linux containers directly on macOS; no separate Linux
+installation is required.
+
+Create an ignored local runtime directory and download only the official
+Langfuse deployment files:
+
+```bash
+mkdir -p integration-runtime/langfuse
+curl -fsSL \
+  https://raw.githubusercontent.com/langfuse/langfuse/d70f258e8230b20c548bb74a3b272c1f30cc097f/docker-compose.yml \
+  -o integration-runtime/langfuse/docker-compose.yml
+curl -fsSL \
+  https://raw.githubusercontent.com/langfuse/langfuse/d70f258e8230b20c548bb74a3b272c1f30cc097f/packages/shared/clickhouse/scripts/dev-tables.sh \
+  -o integration-runtime/langfuse/dev-tables.sh
+cd integration-runtime/langfuse
+```
+
+Create `.env` with test-only headless initialization values:
+
+```dotenv
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=skillpulse-local-nextauth-secret-2026
+SALT=skillpulse-local-salt-2026
+ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+TELEMETRY_ENABLED=false
+LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN=true
+LANGFUSE_MIGRATION_V4_WRITE_MODE=events_only
+LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR=direct
+LANGFUSE_INIT_ORG_ID=skillpulse-local-org
+LANGFUSE_INIT_ORG_NAME=SkillPulse Local Integration
+LANGFUSE_INIT_PROJECT_ID=skillpulse-local-project
+LANGFUSE_INIT_PROJECT_NAME=SkillPulse Local Integration
+LANGFUSE_INIT_PROJECT_PUBLIC_KEY=lf_pk_skillpulse_local_test_2026
+LANGFUSE_INIT_PROJECT_SECRET_KEY=lf_sk_skillpulse_local_test_2026
+LANGFUSE_INIT_USER_EMAIL=skillpulse-local@example.test
+LANGFUSE_INIT_USER_NAME=SkillPulse Local
+LANGFUSE_INIT_USER_PASSWORD=SkillPulseLocalTest2026
+```
+
+Create `docker-compose.override.yml` so the current v4 preview flags reach both
+Langfuse processes:
+
+```yaml
+services:
+  langfuse-worker:
+    environment:
+      LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN: "true"
+      LANGFUSE_MIGRATION_V4_WRITE_MODE: events_only
+      LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR: direct
+  langfuse-web:
+    environment:
+      LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN: "true"
+      LANGFUSE_MIGRATION_V4_WRITE_MODE: events_only
+      LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR: direct
+```
+
+Initialize the preview event tables with Langfuse's pinned official script,
+then start the full stack:
+
+```bash
+docker compose up -d --wait postgres clickhouse redis minio
+docker compose cp dev-tables.sh clickhouse:/tmp/dev-tables.sh
+docker compose exec -T \
+  -e CLICKHOUSE_MIGRATION_URL=clickhouse://localhost:9000 \
+  -e CLICKHOUSE_USER=clickhouse \
+  -e CLICKHOUSE_PASSWORD=clickhouse \
+  -e CLICKHOUSE_DB=default \
+  clickhouse bash /tmp/dev-tables.sh
+docker compose up -d --wait
+curl -fsS http://127.0.0.1:3000/api/public/health
+cd ../..
+```
+
+Start Phoenix from its pinned official image:
+
+```bash
+docker run -d --name skillpulse-phoenix-real \
+  -p 6006:6006 -p 4317:4317 \
+  -e PHOENIX_WORKING_DIR=/mnt/data \
+  -v skillpulse_phoenix_data:/mnt/data \
+  arizephoenix/phoenix@sha256:e90f05fc04d7507a948128ddd701d89ad1816a1b6fcccfb9feebd0f77d5e86a3
+curl -fsS http://127.0.0.1:6006/healthz
+```
+
+Run the real integration tests from the repository root:
+
+```bash
+export LANGFUSE_PUBLIC_KEY=lf_pk_skillpulse_local_test_2026
+export LANGFUSE_SECRET_KEY=lf_sk_skillpulse_local_test_2026
+export LANGFUSE_BASE_URL=http://127.0.0.1:3000
+export PHOENIX_BASE_URL=http://127.0.0.1:6006
+SKILLPULSE_REAL_INTEGRATION=1 python -m pytest -q \
+  tests/integration/real/test_real_providers.py
+```
+
+Provider source, credentials, databases, and container runtime data live under
+the ignored `integration-runtime/` boundary or Docker volumes. They are never
+part of the package or commit; only the reproducible test seeders, assertions,
+and this deployment recipe are tracked.
 
 ### Mapping rules
 

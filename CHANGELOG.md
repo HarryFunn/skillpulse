@@ -13,6 +13,13 @@
 - Preserve provider metadata and evaluation evidence on imported `SkillRun`
   records, including additive migrations for existing databases.
 - Add isolated adapter, mapping, checkpoint, retry, and real-HTTP CLI tests.
+- Validate both adapters against local Langfuse 3.222.0 and Phoenix 19.2.0
+  services with opt-in trace-to-SQLite integration tests and idempotent re-syncs.
+- Use Langfuse's current Observations v2 contract (without deprecated
+  `parseIoAsJson`) and include the required `traceId` when querying v3 scores
+  for root observations.
+- Document reproducible Docker Desktop deployments while keeping provider
+  source, credentials, databases, and container data outside version control.
 
 ## 0.2.0
 

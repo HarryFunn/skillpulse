@@ -11,6 +11,7 @@ venv/
 
 # SkillPulse runtime data
 *.db
+integration-runtime/
 
 # OS / editor
 .DS_Store

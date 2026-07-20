@@ -84,6 +84,11 @@ def test_langfuse_reads_root_observations_and_v3_scores(tmp_path):
         "/api/public/v3/scores",
         "/api/public/v3/scores",
     ]
+    assert "parseIoAsJson" not in client.calls[0][1]
+    assert client.calls[1][1]["traceId"] == "trace-1"
+    assert "observationId" not in client.calls[1][1]
+    assert client.calls[2][1]["traceId"] == "trace-1"
+    assert client.calls[2][1]["observationId"] == "root-1"
 
     store = SkillStore(tmp_path / "langfuse.db")
     store.add_skill("support", "Support", content="v1")

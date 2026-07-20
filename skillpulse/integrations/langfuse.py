@@ -48,7 +48,6 @@ class LangfuseSource:
             "fromStartTime": _iso(since or 0.0),
             "toStartTime": _iso(self._window_end),
             "limit": self.page_size,
-            "parseIoAsJson": "true",
         }
         if cursor:
             params["cursor"] = cursor
@@ -82,20 +81,26 @@ class LangfuseSource:
         grouped: dict[str, dict[str, SourceEvaluation]] = {}
         selected_at: dict[tuple[str, str], float] = {}
         queries = (
-            ("traceId", list(dict.fromkeys(trace_ids))),
-            ("observationId", list(observation_to_trace)),
+            {"traceId": list(dict.fromkeys(trace_ids))},
+            {
+                "traceId": list(dict.fromkeys(observation_to_trace.values())),
+                "observationId": list(observation_to_trace),
+            },
         )
-        for filter_name, identifiers in queries:
-            if not identifiers:
+        for filters in queries:
+            if not all(filters.values()):
                 continue
             cursor: str | None = None
             seen: set[str] = set()
             while True:
                 params: dict[str, Any] = {
-                    filter_name: ",".join(identifiers),
                     "fields": "subject,details",
                     "limit": 100,
                 }
+                params.update({
+                    name: ",".join(identifiers)
+                    for name, identifiers in filters.items()
+                })
                 if cursor:
                     params["cursor"] = cursor
                 payload = self.client.get("/api/public/v3/scores", params)
