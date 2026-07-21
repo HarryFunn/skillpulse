@@ -1,6 +1,6 @@
 """SkillPulse: runtime health and safe lifecycle management for Agent Skills."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .attribution import Attributor, AttributionConfig, AttributionReport, Cause
 from .health import HealthChecker, HealthConfig

@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS skill_runs (
     model        TEXT NOT NULL DEFAULT '',
     source       TEXT NOT NULL DEFAULT 'manual',
     session_id   TEXT NOT NULL DEFAULT '',
+    metadata     TEXT NOT NULL DEFAULT '{}',
+    evaluations  TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY (skill_id, version) REFERENCES versions(skill_id, version)
 );
 
@@ -115,6 +117,12 @@ CREATE TABLE IF NOT EXISTS events (
     kind     TEXT NOT NULL,
     payload  TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS integration_checkpoints (
+    source_key TEXT PRIMARY KEY,
+    watermark  REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -146,6 +154,17 @@ class SkillStore:
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_exec_external_id "
             "ON executions(execution_id) WHERE execution_id <> ''")
+
+        run_cols = {r["name"] for r in
+                    self._conn.execute("PRAGMA table_info(skill_runs)").fetchall()}
+        run_additions = {
+            "metadata": "TEXT NOT NULL DEFAULT '{}'",
+            "evaluations": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for name, definition in run_additions.items():
+            if name not in run_cols:
+                self._conn.execute(
+                    f"ALTER TABLE skill_runs ADD COLUMN {name} {definition}")
 
     def close(self) -> None:
         self._conn.close()
@@ -295,11 +314,12 @@ class SkillStore:
         with self._conn:
             cur = self._conn.execute(
                 "INSERT OR IGNORE INTO skill_runs (run_id, skill_id, version, success, ts, "
-                "input_data, output_data, error, task_tag, model, source, session_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "input_data, output_data, error, task_tag, model, source, session_id, "
+                "metadata, evaluations) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run.run_id, run.skill_id, run.version, int(run.success), run.ts,
                  json.dumps(run.input_data), json.dumps(run.output_data), run.error,
-                 run.task_tag, run.model, run.source, run.session_id),
+                 run.task_tag, run.model, run.source, run.session_id,
+                 json.dumps(run.metadata), json.dumps(run.evaluations)),
             )
         return cur.rowcount == 1
 
@@ -320,8 +340,29 @@ class SkillStore:
                          input_data=json.loads(r["input_data"]),
                          output_data=json.loads(r["output_data"]), error=r["error"],
                          task_tag=r["task_tag"], model=r["model"], source=r["source"],
-                         session_id=r["session_id"])
+                         session_id=r["session_id"],
+                         metadata=json.loads(r["metadata"]),
+                         evaluations=json.loads(r["evaluations"]))
                 for r in rows]
+
+    # -- integration checkpoints ---------------------------------------------
+
+    def get_integration_checkpoint(self, source_key: str) -> float | None:
+        row = self._conn.execute(
+            "SELECT watermark FROM integration_checkpoints WHERE source_key = ?",
+            (source_key,),
+        ).fetchone()
+        return None if row is None else float(row["watermark"])
+
+    def set_integration_checkpoint(self, source_key: str, watermark: float) -> None:
+        """Persist a completed polling window's high-water mark."""
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO integration_checkpoints (source_key, watermark, updated_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(source_key) DO UPDATE SET "
+                "watermark = excluded.watermark, updated_at = excluded.updated_at",
+                (source_key, watermark, time.time()),
+            )
 
     # -- tool calls ----------------------------------------------------------
 
